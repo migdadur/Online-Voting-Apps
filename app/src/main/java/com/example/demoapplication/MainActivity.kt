@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppNavigation() {
     val navController = rememberNavController()
@@ -63,41 +64,34 @@ fun AppNavigation() {
     ) {
         composable("login") { LoginPage(navController, authViewModel) }
         composable("signup") { SignUpPage(navController, authViewModel) }
-        composable("forgot_password") { ForgotPasswordPage(navController, authViewModel) }
+        composable("forgot_password") { ForgotPasswordPage(navController) }
         composable("dashboard") { DashboardPage(navController, authViewModel, electionViewModel, voteViewModel) }
         composable("active_elections") { ActiveElectionsPage(navController, electionViewModel, voteViewModel, authViewModel) }
         composable("upcoming_elections") { UpcomingElectionsPage(navController, electionViewModel) }
         composable("my_votes") { MyVotesPage(navController, voteViewModel, authViewModel) }
-        composable("candidates") { CandidatesPage(navController, electionViewModel) }
-        composable("results") { ResultsPage(navController, electionViewModel, voteViewModel) }
+        composable("candidates") { CandidatesPage(navController, electionViewModel, authViewModel) }
+        composable("results") { ResultsPage(navController, electionViewModel, voteViewModel, authViewModel) }
         composable("settings") { SettingsPage(navController, authViewModel) }
         composable("admin_add_candidate") { AdminAddCandidatePage(navController, electionViewModel) }
         composable("admin_manage_elections") { AdminManageElectionsPage(navController, electionViewModel) }
         composable("create_election") { CreateElectionPage(navController, electionViewModel) }
-        composable("audit_log") { AuditLogPage(navController, voteViewModel, authViewModel) }
+        composable("audit_log") { AuditLogPage(navController, voteViewModel) }
         composable("election_detail/{electionId}") { backStackEntry ->
             val electionId = backStackEntry.arguments?.getString("electionId") ?: ""
-            ElectionDetailScreen(
-                electionId = electionId,
-                navController = navController,
-                electionViewModel = electionViewModel,
-                voteViewModel = voteViewModel,
-                authViewModel = authViewModel
-            )
+            ElectionDetailScreen(electionId, navController, electionViewModel, voteViewModel, authViewModel)
         }
         composable("results_detail/{electionId}") { backStackEntry ->
             val electionId = backStackEntry.arguments?.getString("electionId") ?: ""
-            ResultsDetailScreen(
-                electionId = electionId,
-                navController = navController,
-                electionViewModel = electionViewModel,
-                voteViewModel = voteViewModel
-            )
+            ResultsDetailScreen(electionId, navController, electionViewModel, voteViewModel)
         }
         composable("edit_candidate/{electionId}/{candidateId}") { backStackEntry ->
             val electionId = backStackEntry.arguments?.getString("electionId") ?: ""
             val candidateId = backStackEntry.arguments?.getString("candidateId") ?: ""
             EditCandidatePage(navController, electionViewModel, electionId, candidateId)
+        }
+        composable("edit_election/{electionId}") { backStackEntry ->
+            val electionId = backStackEntry.arguments?.getString("electionId") ?: ""
+            EditElectionPage(navController, electionViewModel, electionId)
         }
     }
 }
@@ -111,6 +105,9 @@ class VoteViewModel {
     private val _auditLog = mutableStateOf<List<AuditEntry>>(emptyList())
     val auditLog: List<AuditEntry> get() = _auditLog.value
 
+    private val _publishedResults = mutableStateOf<Map<String, PublishedResult>>(emptyMap())
+    val publishedResults: Map<String, PublishedResult> get() = _publishedResults.value
+
     data class Vote(
         val voterId: Int,
         val voterName: String,
@@ -122,6 +119,19 @@ class VoteViewModel {
         val timestamp: Long
     )
 
+    data class PublishedResult(
+        val electionId: String,
+        val electionTitle: String,
+        val winnerId: String,
+        val winnerName: String,
+        val winnerParty: String,
+        val winnerSymbol: String,
+        val totalVotes: Int,
+        val turnout: Int,
+        val results: Map<String, Int>,
+        val publishedAt: Long
+    )
+
     data class AuditEntry(
         val id: String,
         val action: String,
@@ -131,218 +141,105 @@ class VoteViewModel {
         val timestamp: Long
     )
 
-    fun castVote(
-        voterId: Int,
-        voterName: String,
-        electionId: String,
-        electionTitle: String,
-        candidateId: String,
-        candidateName: String,
-        candidateParty: String
-    ): Boolean {
+    fun castVote(voterId: Int, voterName: String, electionId: String, electionTitle: String, candidateId: String, candidateName: String, candidateParty: String): Boolean {
         val voteKey = "${voterId}_${electionId}"
-        if (_votes.value.containsKey(voteKey)) {
-            return false
-        }
-
-        val vote = Vote(
-            voterId = voterId,
-            voterName = voterName,
-            electionId = electionId,
-            electionTitle = electionTitle,
-            candidateId = candidateId,
-            candidateName = candidateName,
-            candidateParty = candidateParty,
-            timestamp = System.currentTimeMillis()
-        )
-
+        if (_votes.value.containsKey(voteKey)) return false
+        val vote = Vote(voterId, voterName, electionId, electionTitle, candidateId, candidateName, candidateParty, System.currentTimeMillis())
         _votes.value = _votes.value + (voteKey to vote)
-
-        addAuditEntry(
-            action = "VOTE_CAST",
-            userId = voterId,
-            userName = voterName,
-            details = "Voted for $candidateName ($candidateParty) in $electionTitle"
-        )
-
+        _auditLog.value = _auditLog.value + AuditEntry(System.currentTimeMillis().toString(), "VOTE_CAST", voterId, voterName, "Voted for $candidateName in $electionTitle", System.currentTimeMillis())
         return true
     }
 
-    fun hasVoted(voterId: Int, electionId: String): Boolean {
-        return _votes.value.containsKey("${voterId}_${electionId}")
-    }
-
-    fun getUserVotes(voterId: Int): List<Vote> {
-        return _votes.value.values.filter { it.voterId == voterId }
-    }
-
-    fun getElectionResults(electionId: String): Map<String, Int> {
-        val electionVotes = _votes.value.values.filter { it.electionId == electionId }
-        return electionVotes.groupingBy { it.candidateId }.eachCount()
-    }
-
+    fun getUserVotes(voterId: Int): List<Vote> = _votes.value.values.filter { it.voterId == voterId }
+    fun getElectionResults(electionId: String): Map<String, Int> = _votes.value.values.filter { it.electionId == electionId }.groupingBy { it.candidateId }.eachCount()
     fun getVoterTurnout(electionId: String, totalVoters: Int): Int {
-        val votedCount = _votes.value.values.count { it.electionId == electionId }
-        return if (totalVoters > 0) (votedCount * 100.0 / totalVoters).toInt() else 0
+        val votesCount = _votes.value.values.count { it.electionId == electionId }
+        return if (totalVoters > 0) (votesCount * 100 / totalVoters) else 0
+    }
+    fun getTotalVotesCast(): Int = _votes.value.size
+    fun getVotesCountForElection(electionId: String): Int = _votes.value.values.count { it.electionId == electionId }
+
+    fun publishResults(electionId: String, electionTitle: String, totalVoters: Int, winnerSymbol: String): PublishedResult? {
+        val results = getElectionResults(electionId)
+        val totalVotes = results.values.sum()
+        if (totalVotes == 0) return null
+        val winnerId = results.maxByOrNull { it.value }?.key ?: return null
+        val turnout = getVoterTurnout(electionId, totalVoters)
+        val winnerVote = _votes.value.values.find { it.electionId == electionId && it.candidateId == winnerId }
+        val publishedResult = PublishedResult(
+            electionId = electionId,
+            electionTitle = electionTitle,
+            winnerId = winnerId,
+            winnerName = winnerVote?.candidateName ?: "Unknown",
+            winnerParty = winnerVote?.candidateParty ?: "Unknown",
+            winnerSymbol = winnerSymbol,
+            totalVotes = totalVotes,
+            turnout = turnout,
+            results = results,
+            publishedAt = System.currentTimeMillis()
+        )
+        _publishedResults.value = _publishedResults.value + (electionId to publishedResult)
+        _auditLog.value = _auditLog.value + AuditEntry(
+            System.currentTimeMillis().toString(),
+            "RESULTS_PUBLISHED",
+            0,
+            "Admin",
+            "Published results for $electionTitle. Winner: ${winnerVote?.candidateName} with $totalVotes votes. Turnout: $turnout%",
+            System.currentTimeMillis()
+        )
+        return publishedResult
     }
 
-    private fun addAuditEntry(action: String, userId: Int, userName: String, details: String) {
-        val entry = AuditEntry(
-            id = System.currentTimeMillis().toString(),
-            action = action,
-            userId = userId,
-            userName = userName,
-            details = details,
-            timestamp = System.currentTimeMillis()
-        )
-        _auditLog.value = _auditLog.value + entry
-    }
+    fun getPublishedResults(electionId: String): PublishedResult? = _publishedResults.value[electionId]
+    fun getAllPublishedResults(): List<PublishedResult> = _publishedResults.value.values.toList()
 }
 
 class AuthViewModel {
     private val _currentUser = mutableStateOf<User?>(null)
     val currentUser: User? get() = _currentUser.value
     val isLoggedIn: Boolean get() = _currentUser.value != null
-
     private val _registeredUsers = mutableStateOf<List<User>>(emptyList())
-    val registeredUsers: List<User> get() = _registeredUsers.value
 
-    data class User(
-        val id: Int,
-        val name: String,
-        val email: String,
-        val password: String,
-        val hasVoted: MutableList<String>,
-        val isAdmin: Boolean = false,
-        val voterId: String = generateVoterId(),
-        val createdAt: Long = System.currentTimeMillis()
-    ) {
-        companion object {
-            private fun generateVoterId(): String {
-                return "VOT${System.currentTimeMillis() % 1000000}${(1000..9999).random()}"
-            }
-        }
-    }
+    data class User(val id: Int, val name: String, val email: String, val password: String, val hasVoted: MutableList<String>, val isAdmin: Boolean = false)
 
     init {
-        registerUser(
-            name = "Admin User",
-            email = "admin@demo.com",
-            password = "admin123",
-            isAdmin = true
-        )
-        registerUser(
-            name = "Test User",
-            email = "user@demo.com",
-            password = "user123",
-            isAdmin = false
-        )
+        registerUser("Admin User", "admin@demo.com", "admin123", true)
+        registerUser("Test User", "user@demo.com", "user123", false)
+        registerUser("John Doe", "john@demo.com", "john123", false)
+        registerUser("Jane Smith", "jane@demo.com", "jane123", false)
     }
 
     fun login(email: String, password: String): Boolean {
-        val user = _registeredUsers.value.find {
-            it.email.equals(email, ignoreCase = true) && it.password == password
-        }
+        val user = _registeredUsers.value.find { it.email.equals(email, ignoreCase = true) && it.password == password }
         return if (user != null) {
             _currentUser.value = user
             true
-        } else {
-            false
-        }
+        } else false
     }
 
-    fun registerUser(name: String, email: String, password: String, isAdmin: Boolean = false): Boolean {
-        if (_registeredUsers.value.any { it.email.equals(email, ignoreCase = true) }) {
-            return false
-        }
-
-        if (password.length < 6) {
-            return false
-        }
-
-        val newUser = User(
-            id = _registeredUsers.value.size + 1,
-            name = name,
-            email = email,
-            password = password,
-            hasVoted = mutableListOf(),
-            isAdmin = isAdmin || _registeredUsers.value.isEmpty()
-        )
-
+    private fun registerUser(name: String, email: String, password: String, isAdmin: Boolean): Boolean {
+        if (_registeredUsers.value.any { it.email.equals(email, ignoreCase = true) }) return false
+        if (password.length < 6) return false
+        val newUser = User(_registeredUsers.value.size + 1, name, email, password, mutableListOf(), isAdmin)
         _registeredUsers.value = _registeredUsers.value + newUser
-        _currentUser.value = newUser
-
+        if (isAdmin) _currentUser.value = newUser
         return true
     }
 
-    fun signUp(name: String, email: String, password: String): Boolean {
-        return registerUser(name, email, password, false)
-    }
-
-    fun logout() {
-        _currentUser.value = null
-    }
-
-    fun isAdmin(): Boolean {
-        return _currentUser.value?.isAdmin == true
-    }
-
-    fun markVoted(electionId: String) {
-        _currentUser.value?.hasVoted?.add(electionId)
-    }
-
-    fun hasVoted(electionId: String): Boolean {
-        return _currentUser.value?.hasVoted?.contains(electionId) == true
-    }
-
-    fun updateUserProfile(name: String, email: String): Boolean {
-        val currentUser = _currentUser.value ?: return false
-
-        if (email != currentUser.email && _registeredUsers.value.any { it.email.equals(email, ignoreCase = true) }) {
-            return false
-        }
-
-        val userIndex = _registeredUsers.value.indexOfFirst { it.id == currentUser.id }
-        if (userIndex == -1) return false
-
-        val updatedUser = currentUser.copy(name = name, email = email)
-
-        _registeredUsers.value = _registeredUsers.value.toMutableList().apply {
-            set(userIndex, updatedUser)
-        }
-        _currentUser.value = updatedUser
-
-        return true
-    }
-
+    fun signUp(name: String, email: String, password: String): Boolean = registerUser(name, email, password, false)
+    fun logout() { _currentUser.value = null }
+    fun isAdmin(): Boolean = _currentUser.value?.isAdmin == true
+    fun markVoted(electionId: String) { _currentUser.value?.hasVoted?.add(electionId) }
+    fun hasVoted(electionId: String): Boolean = _currentUser.value?.hasVoted?.contains(electionId) == true
     fun changePassword(oldPassword: String, newPassword: String): Boolean {
         val currentUser = _currentUser.value ?: return false
-
-        if (currentUser.password != oldPassword) {
-            return false
-        }
-
-        if (newPassword.length < 6) {
-            return false
-        }
-
-        val userIndex = _registeredUsers.value.indexOfFirst { it.id == currentUser.id }
-        val updatedUser = currentUser.copy(password = newPassword)
-
-        _registeredUsers.value = _registeredUsers.value.toMutableList().apply {
-            set(userIndex, updatedUser)
-        }
-        _currentUser.value = updatedUser
-
-        return true
-    }
-
-    fun deleteAccount(): Boolean {
-        val currentUser = _currentUser.value ?: return false
-
-        _registeredUsers.value = _registeredUsers.value.filter { it.id != currentUser.id }
-        _currentUser.value = null
-
+        if (currentUser.password != oldPassword || newPassword.length < 6) return false
+        val index = _registeredUsers.value.indexOfFirst { it.id == currentUser.id }
+        val updated = currentUser.copy(password = newPassword)
+        val list = _registeredUsers.value.toMutableList()
+        list[index] = updated
+        _registeredUsers.value = list
+        _currentUser.value = updated
         return true
     }
 }
@@ -352,84 +249,77 @@ class ElectionViewModel {
     val elections: List<Election> get() = _elections.value
 
     init {
-        loadInitialElections()
-    }
-
-    private fun loadInitialElections() {
-        _elections.value = getInitialElections()
+        _elections.value = listOf(
+            Election("1", "Presidential Election 2024", "Vote for the next President", "March 15, 2024", "Main Auditorium", ElectionStatus.ACTIVE, mutableListOf(
+                Candidate("c1", "Sarah Johnson", "Progressive Union", "🌿", "Improving campus facilities and student services"),
+                Candidate("c2", "Michael Chen", "Future Leaders", "⚡", "Career development and tech innovation"),
+                Candidate("c3", "Emily Rodriguez", "Student First", "📚", "Student rights and academic excellence")
+            ), 5000),
+            Election("2", "CS Department Representative", "Elect your representative", "March 15-17, 2024", "Online", ElectionStatus.ACTIVE, mutableListOf(
+                Candidate("c4", "Alex Thompson", "Tech Innovators", "💻", "AI and machine learning focus"),
+                Candidate("c5", "Jessica Lee", "CS Excellence", "🎯", "Industry bridge and internship programs"),
+                Candidate("c6", "David Kim", "Code for All", "🌐", "Inclusive coding and diversity")
+            ), 800),
+            Election("3", "Vice President Election", "Choose the Vice President", "March 25, 2024", "Student Center", ElectionStatus.UPCOMING, mutableListOf(
+                Candidate("c7", "Olivia Martinez", "Unity Coalition", "🤝", "Event management and student engagement"),
+                Candidate("c8", "James Wilson", "Action Party", "⚡", "Digital transformation and modernization"),
+                Candidate("c9", "Sophia Brown", "Bridge Builders", "🌉", "Collaboration and communication")
+            ), 5000),
+            Election("4", "Class Representative 2023", "Annual election", "December 10, 2023", "Online", ElectionStatus.COMPLETED, mutableListOf(
+                Candidate("c10", "Thomas Anderson", "Student Voice", "🎓", "Student welfare and advocacy"),
+                Candidate("c11", "Nina Williams", "Change Makers", "⭐", "Curriculum improvement and feedback")
+            ), 1200)
+        )
     }
 
     fun addCandidate(electionId: String, candidate: Candidate): Boolean {
-        val election = _elections.value.find { it.id == electionId } ?: return false
-
-        _elections.value = _elections.value.map { currentElection ->
-            if (currentElection.id == electionId) {
-                currentElection.copy(
-                    candidates = currentElection.candidates + candidate
-                )
-            } else {
-                currentElection
-            }
-        }
+        val updatedElections = _elections.value.toMutableList()
+        val electionIndex = updatedElections.indexOfFirst { it.id == electionId }
+        if (electionIndex == -1) return false
+        val election = updatedElections[electionIndex]
+        election.candidates.add(candidate)
+        updatedElections[electionIndex] = election
+        _elections.value = updatedElections
         return true
     }
 
     fun updateCandidate(electionId: String, candidateId: String, updatedCandidate: Candidate): Boolean {
-        _elections.value = _elections.value.map { currentElection ->
-            if (currentElection.id == electionId) {
-                currentElection.copy(
-                    candidates = currentElection.candidates.map { candidate ->
-                        if (candidate.id == candidateId) {
-                            updatedCandidate.copy(id = candidateId)
-                        } else {
-                            candidate
-                        }
-                    }
-                )
-            } else {
-                currentElection
-            }
-        }
+        val updatedElections = _elections.value.toMutableList()
+        val electionIndex = updatedElections.indexOfFirst { it.id == electionId }
+        if (electionIndex == -1) return false
+        val election = updatedElections[electionIndex]
+        val candidateIndex = election.candidates.indexOfFirst { it.id == candidateId }
+        if (candidateIndex == -1) return false
+        election.candidates[candidateIndex] = updatedCandidate
+        updatedElections[electionIndex] = election
+        _elections.value = updatedElections
         return true
     }
 
     fun removeCandidate(electionId: String, candidateId: String): Boolean {
-        _elections.value = _elections.value.map { currentElection ->
-            if (currentElection.id == electionId) {
-                currentElection.copy(
-                    candidates = currentElection.candidates.filter { it.id != candidateId }
-                )
-            } else {
-                currentElection
-            }
-        }
+        val updatedElections = _elections.value.toMutableList()
+        val electionIndex = updatedElections.indexOfFirst { it.id == electionId }
+        if (electionIndex == -1) return false
+        val election = updatedElections[electionIndex]
+        val updatedCandidates = election.candidates.filter { it.id != candidateId }.toMutableList()
+        val updatedElection = election.copy(candidates = updatedCandidates)
+        updatedElections[electionIndex] = updatedElection
+        _elections.value = updatedElections
         return true
     }
 
     fun addElection(election: Election): Boolean {
-        if (_elections.value.any { it.title.equals(election.title, ignoreCase = true) }) {
-            return false
-        }
-
-        if (election.totalVoters <= 0) {
-            return false
-        }
-
+        if (_elections.value.any { it.title.equals(election.title, ignoreCase = true) }) return false
         _elections.value = _elections.value + election
         return true
     }
 
     fun updateElection(electionId: String, updatedElection: Election): Boolean {
-        _elections.value = _elections.value.map { currentElection ->
-            if (currentElection.id == electionId) {
-                updatedElection.copy(
-                    id = electionId,
-                    candidates = currentElection.candidates
-                )
-            } else {
-                currentElection
-            }
-        }
+        val updatedElections = _elections.value.toMutableList()
+        val electionIndex = updatedElections.indexOfFirst { it.id == electionId }
+        if (electionIndex == -1) return false
+        updatedElections[electionIndex] = updatedElection
+        _elections.value = updatedElections
         return true
     }
 
@@ -441,123 +331,21 @@ class ElectionViewModel {
     fun getElectionById(electionId: String): Election? {
         return _elections.value.find { it.id == electionId }
     }
-
-    fun getElectionsByStatus(status: ElectionStatus): List<Election> {
-        return _elections.value.filter { it.status == status }
-    }
-
-    fun updateElectionStatus(electionId: String, newStatus: ElectionStatus): Boolean {
-        _elections.value = _elections.value.map { currentElection ->
-            if (currentElection.id == electionId) {
-                currentElection.copy(status = newStatus)
-            } else {
-                currentElection
-            }
-        }
-        return true
-    }
 }
 
 // ==================== DATA MODELS ====================
 
-data class DashboardItem(
-    val title: String,
-    val description: String,
-    val icon: ImageVector,
-    val route: String,
-    val color: Color
-)
+data class DashboardItem(val title: String, val description: String, val icon: ImageVector, val route: String, val color: Color)
+data class Election(val id: String, val title: String, val description: String, val date: String, val location: String, val status: ElectionStatus, val candidates: MutableList<Candidate>, val totalVoters: Int)
+data class Candidate(val id: String, val name: String, val party: String, val symbol: String, val description: String, val imageUrl: String? = null)
+enum class ElectionStatus { ACTIVE, UPCOMING, COMPLETED }
+data class CandidateWithDetails(val electionTitle: String, val candidate: Candidate, val electionId: String, val electionStatus: ElectionStatus)
 
-data class Election(
-    val id: String,
-    val title: String,
-    val description: String,
-    val date: String,
-    val location: String,
-    val status: ElectionStatus,
-    val candidates: List<Candidate>,
-    val totalVoters: Int,
-    val voterTurnout: Int? = null
-)
-
-data class Candidate(
-    val id: String,
-    val name: String,
-    val party: String,
-    val symbol: String,
-    val description: String,
-    val imageUrl: String? = null
-)
-
-enum class ElectionStatus {
-    ACTIVE, UPCOMING, COMPLETED
-}
-
-// ==================== INITIAL DATA ====================
-
-fun getInitialElections(): List<Election> = listOf(
-    Election(
-        id = "1",
-        title = "Presidential Election 2024",
-        description = "Vote for the next President of the Student Council.",
-        date = "March 15, 2024 (9:00 AM - 5:00 PM)",
-        location = "Main Auditorium & Online Portal",
-        status = ElectionStatus.ACTIVE,
-        candidates = listOf(
-            Candidate("c1", "Sarah Johnson", "Progressive Student Union", "🌿", "Committed to improving campus facilities."),
-            Candidate("c2", "Michael Chen", "Future Leaders Party", "⚡", "Focus on career development opportunities."),
-            Candidate("c3", "Emily Rodriguez", "Student First Alliance", "📚", "Advocating for student rights.")
-        ),
-        totalVoters = 5000,
-        voterTurnout = 1247
-    ),
-    Election(
-        id = "2",
-        title = "Department Representative - CS",
-        description = "Elect your department representative.",
-        date = "March 15-17, 2024",
-        location = "Online Voting System",
-        status = ElectionStatus.ACTIVE,
-        candidates = listOf(
-            Candidate("c4", "Alex Thompson", "Tech Innovators", "💻", "Expert in AI and ML."),
-            Candidate("c5", "Jessica Lee", "CS Excellence", "🎯", "Industry-academia bridge."),
-            Candidate("c6", "David Kim", "Code for All", "🌐", "Inclusive coding education.")
-        ),
-        totalVoters = 800,
-        voterTurnout = 342
-    ),
-    Election(
-        id = "3",
-        title = "Vice President Election",
-        description = "Choose the Vice President.",
-        date = "March 25, 2024",
-        location = "Student Center",
-        status = ElectionStatus.UPCOMING,
-        candidates = listOf(
-            Candidate("c7", "Olivia Martinez", "Unity Coalition", "🤝", "Event management expert."),
-            Candidate("c8", "James Wilson", "Action Party", "⚡", "Digital transformation focus."),
-            Candidate("c9", "Sophia Brown", "Bridge Builders", "🌉", "Inter-department collaboration.")
-        ),
-        totalVoters = 5000
-    ),
-    Election(
-        id = "4",
-        title = "Class Representative 2023",
-        description = "Annual class representative election.",
-        date = "December 10, 2023",
-        location = "Online",
-        status = ElectionStatus.COMPLETED,
-        candidates = listOf(
-            Candidate("c10", "Thomas Anderson", "Student Voice", "🎓", "Student welfare focus."),
-            Candidate("c11", "Nina Williams", "Change Makers", "⭐", "Curriculum improvement.")
-        ),
-        totalVoters = 1200,
-        voterTurnout = 892
-    )
-)
+fun isValidEmail(email: String): Boolean = Patterns.EMAIL_ADDRESS.matcher(email).matches()
 
 // ==================== LOGIN PAGE ====================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LoginPage(navController: NavController, authViewModel: AuthViewModel) {
     var email by remember { mutableStateOf("") }
@@ -566,140 +354,54 @@ fun LoginPage(navController: NavController, authViewModel: AuthViewModel) {
     var isLoading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Icon(
-                    Icons.Default.HowToVote,
-                    contentDescription = null,
-                    modifier = Modifier.size(80.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), elevation = CardDefaults.cardElevation(8.dp)) {
+            Column(modifier = Modifier.padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Default.HowToVote, contentDescription = null, modifier = Modifier.size(80.dp), tint = MaterialTheme.colorScheme.primary)
                 Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    "Smart Ballot",
-                    style = MaterialTheme.typography.headlineLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    "Secure Digital Voting Platform",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                )
+                Text("Smart Ballot", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Text("Secure Digital Voting Platform", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
                 Spacer(modifier = Modifier.height(32.dp))
 
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = {
-                        email = it
-                        showError = false
-                    },
-                    label = { Text("Email") },
-                    leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                    isError = showError,
-                    shape = RoundedCornerShape(12.dp)
-                )
+                OutlinedTextField(value = email, onValueChange = { newEmail -> email = newEmail; showError = false }, label = { Text("Email") }, leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), isError = showError, shape = RoundedCornerShape(12.dp))
                 Spacer(modifier = Modifier.height(16.dp))
-
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = {
-                        password = it
-                        showError = false
-                    },
-                    label = { Text("Password") },
-                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    isError = showError,
-                    shape = RoundedCornerShape(12.dp)
-                )
+                OutlinedTextField(value = password, onValueChange = { newPassword -> password = newPassword; showError = false }, label = { Text("Password") }, leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), isError = showError, shape = RoundedCornerShape(12.dp))
 
                 if (showError) {
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "Invalid email or password",
-                        color = MaterialTheme.colorScheme.error,
-                        fontSize = 12.sp
-                    )
+                    Text("Invalid email or password", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                 }
-
                 Spacer(modifier = Modifier.height(24.dp))
 
-                Button(
-                    onClick = {
-                        scope.launch {
-                            isLoading = true
-                            delay(500)
-                            if (authViewModel.login(email, password)) {
-                                navController.navigate("dashboard") {
-                                    popUpTo("login") { inclusive = true }
-                                }
-                            } else {
-                                showError = true
-                            }
-                            isLoading = false
+                Button(onClick = {
+                    scope.launch {
+                        isLoading = true
+                        delay(500)
+                        if (authViewModel.login(email, password)) {
+                            navController.navigate("dashboard") { popUpTo("login") { inclusive = true } }
+                        } else {
+                            showError = true
                         }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isLoading,
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
-                    } else {
-                        Text("Login", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        isLoading = false
                     }
+                }, modifier = Modifier.fillMaxWidth(), enabled = !isLoading, shape = RoundedCornerShape(12.dp)) {
+                    if (isLoading) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
+                    else Text("Login", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    TextButton(onClick = { navController.navigate("signup") }) {
-                        Text("Sign Up", color = MaterialTheme.colorScheme.primary)
-                    }
-                    TextButton(onClick = { navController.navigate("forgot_password") }) {
-                        Text("Forgot Password?", color = MaterialTheme.colorScheme.primary)
-                    }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    TextButton(onClick = { navController.navigate("signup") }) { Text("Sign Up", color = MaterialTheme.colorScheme.primary) }
+                    TextButton(onClick = { navController.navigate("forgot_password") }) { Text("Forgot Password?", color = MaterialTheme.colorScheme.primary) }
                 }
 
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 16.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
-                    ),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
+                Card(modifier = Modifier.fillMaxWidth().padding(top = 16.dp), colors = CardDefaults.cardColors(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)), shape = RoundedCornerShape(8.dp)) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            "Demo Credentials:",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text("Demo Credentials:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                         Text("Admin: admin@demo.com / admin123", style = MaterialTheme.typography.bodySmall)
                         Text("User: user@demo.com / user123", style = MaterialTheme.typography.bodySmall)
+                        Text("John: john@demo.com / john123", style = MaterialTheme.typography.bodySmall)
+                        Text("Jane: jane@demo.com / jane123", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -709,6 +411,7 @@ fun LoginPage(navController: NavController, authViewModel: AuthViewModel) {
 
 // ==================== SIGN UP PAGE ====================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SignUpPage(navController: NavController, authViewModel: AuthViewModel) {
     var name by remember { mutableStateOf("") }
@@ -719,129 +422,52 @@ fun SignUpPage(navController: NavController, authViewModel: AuthViewModel) {
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    "Create Account",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    "Join the future of voting",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                )
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), elevation = CardDefaults.cardElevation(8.dp)) {
+            Column(modifier = Modifier.padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Create Account", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("Join the future of voting", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
                 Spacer(modifier = Modifier.height(24.dp))
 
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Full Name") },
-                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
-                )
+                OutlinedTextField(value = name, onValueChange = { newName -> name = newName }, label = { Text("Full Name") }, leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
                 Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = { Text("Email") },
-                    leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                    shape = RoundedCornerShape(12.dp)
-                )
+                OutlinedTextField(value = email, onValueChange = { newEmail -> email = newEmail }, label = { Text("Email") }, leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), shape = RoundedCornerShape(12.dp))
                 Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Password") },
-                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    shape = RoundedCornerShape(12.dp)
-                )
+                OutlinedTextField(value = password, onValueChange = { newPassword -> password = newPassword }, label = { Text("Password") }, leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), shape = RoundedCornerShape(12.dp))
                 Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = confirmPassword,
-                    onValueChange = { confirmPassword = it },
-                    label = { Text("Confirm Password") },
-                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    isError = password != confirmPassword && confirmPassword.isNotBlank(),
-                    shape = RoundedCornerShape(12.dp)
-                )
+                OutlinedTextField(value = confirmPassword, onValueChange = { newConfirm -> confirmPassword = newConfirm }, label = { Text("Confirm Password") }, leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), isError = password != confirmPassword && confirmPassword.isNotBlank(), shape = RoundedCornerShape(12.dp))
 
                 if (errorMessage != null) {
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        errorMessage!!,
-                        color = MaterialTheme.colorScheme.error,
-                        fontSize = 12.sp
-                    )
+                    Text(errorMessage!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                 }
-
                 Spacer(modifier = Modifier.height(24.dp))
 
-                Button(
-                    onClick = {
-                        when {
-                            name.isBlank() -> errorMessage = "Please enter your name"
-                            !isValidEmail(email) -> errorMessage = "Please enter a valid email"
-                            password.length < 6 -> errorMessage = "Password must be at least 6 characters"
-                            password != confirmPassword -> errorMessage = "Passwords do not match"
-                            else -> {
-                                scope.launch {
-                                    isLoading = true
-                                    delay(500)
-                                    if (authViewModel.signUp(name, email, password)) {
-                                        navController.navigate("dashboard") {
-                                            popUpTo("login") { inclusive = true }
-                                        }
-                                    } else {
-                                        errorMessage = "Email already registered"
-                                    }
-                                    isLoading = false
+                Button(onClick = {
+                    when {
+                        name.isBlank() -> errorMessage = "Please enter your name"
+                        !isValidEmail(email) -> errorMessage = "Please enter a valid email"
+                        password.length < 6 -> errorMessage = "Password must be at least 6 characters"
+                        password != confirmPassword -> errorMessage = "Passwords do not match"
+                        else -> {
+                            scope.launch {
+                                isLoading = true
+                                delay(500)
+                                if (authViewModel.signUp(name, email, password)) {
+                                    navController.navigate("dashboard") { popUpTo("login") { inclusive = true } }
+                                } else {
+                                    errorMessage = "Email already registered"
                                 }
+                                isLoading = false
                             }
                         }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isLoading,
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
-                    } else {
-                        Text("Register", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     }
+                }, modifier = Modifier.fillMaxWidth(), enabled = !isLoading, shape = RoundedCornerShape(12.dp)) {
+                    if (isLoading) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
+                    else Text("Register", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 }
-
                 Spacer(modifier = Modifier.height(12.dp))
-
-                TextButton(onClick = { navController.popBackStack() }) {
-                    Text("Already have an account? Login")
-                }
+                TextButton(onClick = { navController.popBackStack() }) { Text("Already have an account? Login") }
             }
         }
     }
@@ -849,59 +475,25 @@ fun SignUpPage(navController: NavController, authViewModel: AuthViewModel) {
 
 // ==================== FORGOT PASSWORD PAGE ====================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ForgotPasswordPage(navController: NavController, authViewModel: AuthViewModel) {
+fun ForgotPasswordPage(navController: NavController) {
     var email by remember { mutableStateOf("") }
     var showSuccess by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Icon(
-                    Icons.Default.Lock,
-                    contentDescription = null,
-                    modifier = Modifier.size(64.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), elevation = CardDefaults.cardElevation(8.dp)) {
+            Column(modifier = Modifier.padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary)
                 Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    "Reset Password",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    "Enter your email to receive a reset link",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(vertical = 8.dp)
-                )
+                Text("Reset Password", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("Enter your email to receive a reset link", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), modifier = Modifier.padding(vertical = 8.dp))
 
                 if (showSuccess) {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = Color(0xFF4CAF50).copy(alpha = 0.1f)
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                    Card(colors = CardDefaults.cardColors(Color(0xFF4CAF50).copy(alpha = 0.1f)), shape = RoundedCornerShape(12.dp)) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Reset link sent to your email!", color = Color(0xFF4CAF50))
@@ -910,1110 +502,200 @@ fun ForgotPasswordPage(navController: NavController, authViewModel: AuthViewMode
                     Spacer(modifier = Modifier.height(16.dp))
                 }
 
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = { Text("Email") },
-                    leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                    shape = RoundedCornerShape(12.dp)
-                )
+                OutlinedTextField(value = email, onValueChange = { newEmail -> email = newEmail }, label = { Text("Email") }, leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), shape = RoundedCornerShape(12.dp))
                 Spacer(modifier = Modifier.height(24.dp))
 
-                Button(
-                    onClick = {
-                        scope.launch {
-                            isLoading = true
-                            delay(1000)
-                            showSuccess = true
-                            isLoading = false
-                            delay(2000)
-                            navController.popBackStack()
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isLoading && email.isNotBlank(),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
-                    } else {
-                        Text("Send Reset Link")
+                Button(onClick = {
+                    scope.launch {
+                        isLoading = true
+                        delay(1000)
+                        showSuccess = true
+                        isLoading = false
+                        delay(2000)
+                        navController.popBackStack()
                     }
+                }, modifier = Modifier.fillMaxWidth(), enabled = !isLoading && email.isNotBlank(), shape = RoundedCornerShape(12.dp)) {
+                    if (isLoading) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
+                    else Text("Send Reset Link")
                 }
-
                 Spacer(modifier = Modifier.height(12.dp))
-
-                TextButton(onClick = { navController.popBackStack() }) {
-                    Text("Back to Login")
-                }
+                TextButton(onClick = { navController.popBackStack() }) { Text("Back to Login") }
             }
         }
     }
 }
-
 // ==================== DASHBOARD PAGE ====================
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DashboardPage(
-    navController: NavController,
-    authViewModel: AuthViewModel,
-    electionViewModel: ElectionViewModel,
-    voteViewModel: VoteViewModel
-) {
+fun DashboardPage(navController: NavController, authViewModel: AuthViewModel, electionViewModel: ElectionViewModel, voteViewModel: VoteViewModel) {
     val isAdmin = authViewModel.isAdmin()
-
-    val dashboardItems = buildList {
-        add(DashboardItem("Active Elections", "Cast your vote now", Icons.Default.HowToVote, "active_elections", Color(0xFF4CAF50)))
-        add(DashboardItem("Upcoming Elections", "Coming soon", Icons.Default.Event, "upcoming_elections", Color(0xFF2196F3)))
-        add(DashboardItem("My Votes", "View voting history", Icons.Default.History, "my_votes", Color(0xFFFF9800)))
-        add(DashboardItem("Candidates", "View all candidates", Icons.Default.Person, "candidates", Color(0xFF9C27B0)))
-        add(DashboardItem("Results", "Election results", Icons.AutoMirrored.Filled.ShowChart, "results", Color(0xFFF44336)))
-        add(DashboardItem("Settings", "Account settings", Icons.Default.Settings, "settings", Color(0xFF607D8B)))
-
-        if (isAdmin) {
-            add(DashboardItem("Add Candidate", "Add new candidates", Icons.Default.PersonAdd, "admin_add_candidate", Color(0xFFE91E63)))
-            add(DashboardItem("Manage Elections", "Create/edit elections", Icons.Default.Edit, "admin_manage_elections", Color(0xFF673AB7)))
-            add(DashboardItem("Audit Log", "View system logs", Icons.Default.History, "audit_log", Color(0xFF795548)))
-        }
-    }
-
-    Scaffold(
-        topBar = {
-            CenterAlignedTopAppBar(
-                title = {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Smart Ballot", fontWeight = FontWeight.Bold)
-                        Text(
-                            "Welcome, ${authViewModel.currentUser?.name?.split(" ")?.first() ?: "Voter"}${if (isAdmin) " (Admin)" else ""}",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(onClick = {
-                        authViewModel.logout()
-                        navController.navigate("login") {
-                            popUpTo("dashboard") { inclusive = true }
-                        }
-                    }) {
-                        Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "Logout")
-                    }
-                }
-            )
-        }
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .padding(padding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            item {
-                StatsCard(electionViewModel, voteViewModel)
-            }
-            items(dashboardItems.chunked(2)) { rowItems ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    rowItems.forEach { item ->
-                        DashboardCard(
-                            item = item,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            navController.navigate(item.route)
-                        }
-                    }
-                    if (rowItems.size == 1) {
-                        Spacer(modifier = Modifier.weight(1f))
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun StatsCard(electionViewModel: ElectionViewModel, voteViewModel: VoteViewModel) {
-    val elections = electionViewModel.elections
-    val activeCount = elections.count { it.status == ElectionStatus.ACTIVE }
-    val upcomingCount = elections.count { it.status == ElectionStatus.UPCOMING }
-    val completedCount = elections.count { it.status == ElectionStatus.COMPLETED }
-    val totalVotes = voteViewModel.votes.size
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
-        ),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            StatItem("Active", activeCount.toString(), Color(0xFF4CAF50))
-            StatItem("Upcoming", upcomingCount.toString(), Color(0xFF2196F3))
-            StatItem("Completed", completedCount.toString(), Color(0xFF9E9E9E))
-            StatItem("Total Votes", totalVotes.toString(), Color(0xFFFF9800))
-        }
-    }
-}
-
-@Composable
-fun StatItem(label: String, value: String, color: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = color)
-        Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-    }
-}
-
-@Composable
-fun DashboardCard(item: DashboardItem, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Card(
-        modifier = modifier
-            .aspectRatio(1f)
-            .clickable { onClick() },
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .background(item.color.copy(alpha = 0.1f), CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    item.icon,
-                    contentDescription = null,
-                    tint = item.color,
-                    modifier = Modifier.size(28.dp)
-                )
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                item.title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-            )
-            Text(
-                item.description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-            )
-        }
-    }
-}
-
-// ==================== ADMIN ADD CANDIDATE PAGE ====================
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun AdminAddCandidatePage(navController: NavController, electionViewModel: ElectionViewModel) {
-    var selectedElectionId by remember { mutableStateOf<String?>(null) }
-    var candidateName by remember { mutableStateOf("") }
-    var candidateParty by remember { mutableStateOf("") }
-    var candidateSymbol by remember { mutableStateOf("") }
-    var candidateDescription by remember { mutableStateOf("") }
-    var showSuccess by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-
-    val elections = electionViewModel.elections
-    val selectedElection = selectedElectionId?.let { electionViewModel.getElectionById(it) }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Add New Candidate") },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White
-                )
-            )
-        }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        "Select Election",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    var expanded by remember { mutableStateOf(false) }
-
-                    ExposedDropdownMenuBox(
-                        expanded = expanded,
-                        onExpandedChange = { expanded = it }
-                    ) {
-                        OutlinedTextField(
-                            value = selectedElection?.let { "${it.title} (${it.status.name})" } ?: "",
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("Election") },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        ExposedDropdownMenu(
-                            expanded = expanded,
-                            onDismissRequest = { expanded = false }
-                        ) {
-                            elections.forEach { election ->
-                                DropdownMenuItem(
-                                    text = { Text("${election.title} (${election.status.name})") },
-                                    onClick = {
-                                        selectedElectionId = election.id
-                                        expanded = false
-                                        errorMessage = null
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (selectedElection != null) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            "Candidate Information",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        OutlinedTextField(
-                            value = candidateName,
-                            onValueChange = {
-                                candidateName = it
-                                errorMessage = null
-                            },
-                            label = { Text("Candidate Name") },
-                            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        OutlinedTextField(
-                            value = candidateParty,
-                            onValueChange = {
-                                candidateParty = it
-                                errorMessage = null
-                            },
-                            label = { Text("Party Name") },
-                            leadingIcon = { Icon(Icons.Default.Group, contentDescription = null) },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        OutlinedTextField(
-                            value = candidateSymbol,
-                            onValueChange = { candidateSymbol = it },
-                            label = { Text("Symbol (Emoji)") },
-                            leadingIcon = { Icon(Icons.Default.EmojiSymbols, contentDescription = null) },
-                            placeholder = { Text("Example: 🌟, 🦁, ⚡") },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        OutlinedTextField(
-                            value = candidateDescription,
-                            onValueChange = { candidateDescription = it },
-                            label = { Text("Description / Manifesto") },
-                            leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
-                            modifier = Modifier.fillMaxWidth(),
-                            minLines = 3,
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                    }
-                }
-
-                if (errorMessage != null) {
-                    Text(
-                        errorMessage!!,
-                        color = MaterialTheme.colorScheme.error,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(horizontal = 16.dp)
-                    )
-                }
-
-                if (candidateName.isNotBlank()) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                "Preview",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    candidateSymbol.ifEmpty { "?" },
-                                    fontSize = 32.sp
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(
-                                        candidateName,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        candidateParty.ifEmpty { "Party Name" },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Button(
-                    onClick = {
-                        when {
-                            candidateName.isBlank() -> errorMessage = "Please enter candidate name"
-                            candidateParty.isBlank() -> errorMessage = "Please enter party name"
-                            else -> {
-                                val newCandidate = Candidate(
-                                    id = System.currentTimeMillis().toString(),
-                                    name = candidateName,
-                                    party = candidateParty,
-                                    symbol = candidateSymbol.ifEmpty { "👤" },
-                                    description = candidateDescription.ifEmpty { "No description provided" }
-                                )
-                                if (electionViewModel.addCandidate(selectedElection.id, newCandidate)) {
-                                    showSuccess = true
-                                    candidateName = ""
-                                    candidateParty = ""
-                                    candidateSymbol = ""
-                                    candidateDescription = ""
-                                } else {
-                                    errorMessage = "Failed to add candidate"
-                                }
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = candidateName.isNotBlank() && candidateParty.isNotBlank(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF4CAF50)
-                    )
-                ) {
-                    Icon(Icons.Default.PersonAdd, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Add Candidate", fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-
-        if (showSuccess) {
-            AlertDialog(
-                onDismissRequest = { showSuccess = false },
-                icon = {
-                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50))
-                },
-                title = { Text("Success!") },
-                text = { Text("Candidate has been added successfully to ${selectedElection?.title}") },
-                confirmButton = {
-                    TextButton(onClick = { showSuccess = false }) {
-                        Text("OK")
-                    }
-                }
-            )
-        }
-    }
-}
-
-// ==================== ADMIN MANAGE ELECTIONS PAGE ====================
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun AdminManageElectionsPage(navController: NavController, electionViewModel: ElectionViewModel) {
-    val elections = electionViewModel.elections
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Manage Elections") },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { navController.navigate("create_election") }) {
-                        Icon(Icons.Default.Add, contentDescription = "Create Election")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White,
-                    actionIconContentColor = Color.White
-                )
-            )
-        }
-    ) { paddingValues ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(elections) { election ->
-                ElectionManagementCard(
-                    election = election,
-                    onEditClick = {
-                        navController.navigate("create_election")
-                    },
-                    onDeleteClick = {
-                        electionViewModel.removeElection(election.id)
-                    },
-                    onManageCandidates = {
-                        navController.navigate("admin_add_candidate")
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun ElectionManagementCard(
-    election: Election,
-    onEditClick: () -> Unit,
-    onDeleteClick: () -> Unit,
-    onManageCandidates: () -> Unit
-) {
-    var showDeleteDialog by remember { mutableStateOf(false) }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        election.title,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "${election.candidates.size} candidates • ${election.totalVoters} voters",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                }
-
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = when (election.status) {
-                        ElectionStatus.ACTIVE -> Color(0xFF4CAF50).copy(alpha = 0.2f)
-                        ElectionStatus.UPCOMING -> Color(0xFF2196F3).copy(alpha = 0.2f)
-                        ElectionStatus.COMPLETED -> Color(0xFF9E9E9E).copy(alpha = 0.2f)
-                    }
-                ) {
-                    Text(
-                        election.status.name,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = when (election.status) {
-                            ElectionStatus.ACTIVE -> Color(0xFF4CAF50)
-                            ElectionStatus.UPCOMING -> Color(0xFF2196F3)
-                            ElectionStatus.COMPLETED -> Color(0xFF757575)
-                        },
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Text(
-                election.description.take(100),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = onEditClick,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Edit", fontSize = 12.sp)
-                }
-
-                OutlinedButton(
-                    onClick = onManageCandidates,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color(0xFF2196F3)
-                    )
-                ) {
-                    Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Candidates", fontSize = 12.sp)
-                }
-
-                OutlinedButton(
-                    onClick = { showDeleteDialog = true },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    )
-                ) {
-                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Delete", fontSize = 12.sp)
-                }
-            }
-        }
-    }
-
-    if (showDeleteDialog) {
-        AlertDialog(
-            onDismissRequest = { showDeleteDialog = false },
-            title = { Text("Delete Election") },
-            text = { Text("Are you sure you want to delete \"${election.title}\"? This action cannot be undone.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onDeleteClick()
-                        showDeleteDialog = false
-                    },
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    )
-                ) {
-                    Text("Delete")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-}
-
-// ==================== CREATE ELECTION PAGE ====================
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun CreateElectionPage(navController: NavController, electionViewModel: ElectionViewModel) {
-    var title by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-    var date by remember { mutableStateOf("") }
-    var location by remember { mutableStateOf("") }
-    var totalVoters by remember { mutableStateOf("") }
-    var selectedStatus by remember { mutableStateOf(ElectionStatus.UPCOMING) }
-    var showSuccess by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Create New Election") },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White
-                )
-            )
-        }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        "Election Details",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    OutlinedTextField(
-                        value = title,
-                        onValueChange = {
-                            title = it
-                            errorMessage = null
-                        },
-                        label = { Text("Election Title") },
-                        leadingIcon = { Icon(Icons.Default.Title, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = description,
-                        onValueChange = { description = it },
-                        label = { Text("Description") },
-                        leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 3,
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = date,
-                        onValueChange = { date = it },
-                        label = { Text("Date (e.g., March 25, 2024)") },
-                        leadingIcon = { Icon(Icons.Default.DateRange, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = location,
-                        onValueChange = { location = it },
-                        label = { Text("Location") },
-                        leadingIcon = { Icon(Icons.Default.LocationOn, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = totalVoters,
-                        onValueChange = {
-                            totalVoters = it
-                            errorMessage = null
-                        },
-                        label = { Text("Total Voters") },
-                        leadingIcon = { Icon(Icons.Default.People, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        "Status",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        FilterChip(
-                            selected = selectedStatus == ElectionStatus.UPCOMING,
-                            onClick = { selectedStatus = ElectionStatus.UPCOMING },
-                            label = { Text("Upcoming") }
-                        )
-                        FilterChip(
-                            selected = selectedStatus == ElectionStatus.ACTIVE,
-                            onClick = { selectedStatus = ElectionStatus.ACTIVE },
-                            label = { Text("Active") }
-                        )
-                        FilterChip(
-                            selected = selectedStatus == ElectionStatus.COMPLETED,
-                            onClick = { selectedStatus = ElectionStatus.COMPLETED },
-                            label = { Text("Completed") }
-                        )
-                    }
-                }
-            }
-
-            if (errorMessage != null) {
-                Text(
-                    errorMessage!!,
-                    color = MaterialTheme.colorScheme.error,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
-            }
-
-            Button(
-                onClick = {
-                    when {
-                        title.isBlank() -> errorMessage = "Please enter election title"
-                        description.isBlank() -> errorMessage = "Please enter description"
-                        date.isBlank() -> errorMessage = "Please enter date"
-                        location.isBlank() -> errorMessage = "Please enter location"
-                        totalVoters.isBlank() -> errorMessage = "Please enter total voters"
-                        totalVoters.toIntOrNull() == null -> errorMessage = "Please enter a valid number"
-                        totalVoters.toInt() <= 0 -> errorMessage = "Total voters must be greater than 0"
-                        else -> {
-                            val totalVotersInt = totalVoters.toInt()
-                            val newElection = Election(
-                                id = System.currentTimeMillis().toString(),
-                                title = title,
-                                description = description,
-                                date = date,
-                                location = location,
-                                status = selectedStatus,
-                                candidates = emptyList(),
-                                totalVoters = totalVotersInt,
-                                voterTurnout = if (selectedStatus == ElectionStatus.COMPLETED) Random.nextInt(500, totalVotersInt) else null
-                            )
-                            if (electionViewModel.addElection(newElection)) {
-                                showSuccess = true
-                            } else {
-                                errorMessage = "Failed to create election (duplicate title?)"
-                            }
-                        }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = title.isNotBlank() && description.isNotBlank() && date.isNotBlank() &&
-                        location.isNotBlank() && totalVoters.isNotBlank(),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF4CAF50)
-                )
-            ) {
-                Icon(Icons.Default.Add, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Create Election", fontWeight = FontWeight.Bold)
-            }
-        }
-
-        if (showSuccess) {
-            AlertDialog(
-                onDismissRequest = {
-                    showSuccess = false
-                    navController.popBackStack()
-                },
-                icon = {
-                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50))
-                },
-                title = { Text("Success!") },
-                text = { Text("Election \"$title\" has been created successfully.") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        showSuccess = false
-                        navController.popBackStack()
-                    }) {
-                        Text("OK")
-                    }
-                }
-            )
-        }
-    }
-}
-
-// ==================== EDIT CANDIDATE PAGE ====================
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun EditCandidatePage(
-    navController: NavController,
-    electionViewModel: ElectionViewModel,
-    electionId: String,
-    candidateId: String
-) {
-    val election = electionViewModel.getElectionById(electionId)
-    val candidate = election?.candidates?.find { it.id == candidateId }
-
-    var candidateName by remember { mutableStateOf(candidate?.name ?: "") }
-    var candidateParty by remember { mutableStateOf(candidate?.party ?: "") }
-    var candidateSymbol by remember { mutableStateOf(candidate?.symbol ?: "") }
-    var candidateDescription by remember { mutableStateOf(candidate?.description ?: "") }
-    var showSuccess by remember { mutableStateOf(false) }
-    var showDeleteDialog by remember { mutableStateOf(false) }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Edit Candidate") },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White
-                )
-            )
-        }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        "Edit Candidate Information",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "Election: ${election?.title}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    OutlinedTextField(
-                        value = candidateName,
-                        onValueChange = { candidateName = it },
-                        label = { Text("Candidate Name") },
-                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = candidateParty,
-                        onValueChange = { candidateParty = it },
-                        label = { Text("Party Name") },
-                        leadingIcon = { Icon(Icons.Default.Group, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = candidateSymbol,
-                        onValueChange = { candidateSymbol = it },
-                        label = { Text("Symbol (Emoji)") },
-                        leadingIcon = { Icon(Icons.Default.EmojiSymbols, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = candidateDescription,
-                        onValueChange = { candidateDescription = it },
-                        label = { Text("Description / Manifesto") },
-                        leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 3,
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick = {
-                        if (candidateName.isNotBlank() && candidateParty.isNotBlank() && candidate != null) {
-                            val updatedCandidate = candidate.copy(
-                                name = candidateName,
-                                party = candidateParty,
-                                symbol = candidateSymbol.ifEmpty { candidate.symbol },
-                                description = candidateDescription.ifEmpty { candidate.description }
-                            )
-                            electionViewModel.updateCandidate(electionId, candidateId, updatedCandidate)
-                            showSuccess = true
-                        }
-                    },
-                    modifier = Modifier.weight(1f),
-                    enabled = candidateName.isNotBlank() && candidateParty.isNotBlank(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF4CAF50)
-                    )
-                ) {
-                    Icon(Icons.Default.Save, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Save Changes")
-                }
-
-                OutlinedButton(
-                    onClick = { showDeleteDialog = true },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    )
-                ) {
-                    Icon(Icons.Default.Delete, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Delete Candidate")
-                }
-            }
-        }
-
-        if (showSuccess) {
-            AlertDialog(
-                onDismissRequest = {
-                    showSuccess = false
-                    navController.popBackStack()
-                },
-                icon = {
-                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50))
-                },
-                title = { Text("Success!") },
-                text = { Text("Candidate has been updated successfully.") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        showSuccess = false
-                        navController.popBackStack()
-                    }) {
-                        Text("OK")
-                    }
-                }
-            )
-        }
-
-        if (showDeleteDialog) {
-            AlertDialog(
-                onDismissRequest = { showDeleteDialog = false },
-                title = { Text("Delete Candidate") },
-                text = { Text("Are you sure you want to delete ${candidate?.name}? This action cannot be undone.") },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            electionViewModel.removeCandidate(electionId, candidateId)
-                            showDeleteDialog = false
-                            navController.popBackStack()
-                        },
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Text("Delete")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showDeleteDialog = false }) {
-                        Text("Cancel")
-                    }
-                }
-            )
-        }
-    }
-}
-
-// ==================== ACTIVE ELECTIONS PAGE ====================
-
-@Composable
-fun ActiveElectionsPage(
-    navController: NavController,
-    electionViewModel: ElectionViewModel,
-    voteViewModel: VoteViewModel,
-    authViewModel: AuthViewModel
-) {
-    val activeElections = electionViewModel.elections.filter { it.status == ElectionStatus.ACTIVE }
-
-    ElectionListScreen(
-        title = "Active Elections",
-        elections = activeElections,
-        navController = navController,
-        isActive = true,
-        onElectionClick = { election ->
-            navController.navigate("election_detail/${election.id}")
-        }
+    val items = mutableListOf(
+        DashboardItem("Active Elections", "Cast your vote", Icons.Default.HowToVote, "active_elections", Color(0xFF4CAF50)),
+        DashboardItem("Upcoming Elections", "Coming soon", Icons.Default.Event, "upcoming_elections", Color(0xFF2196F3)),
+        DashboardItem("My Votes", "History", Icons.Default.History, "my_votes", Color(0xFFFF9800)),
+        DashboardItem("Candidates", "Profiles", Icons.Default.Person, "candidates", Color(0xFF9C27B0)),
+        DashboardItem("Results", "View winners", Icons.AutoMirrored.Filled.ShowChart, "results", Color(0xFFF44336)),
+        DashboardItem("Settings", "Account", Icons.Default.Settings, "settings", Color(0xFF607D8B))
     )
+    if (isAdmin) {
+        items.add(DashboardItem("Add Candidate", "Add new", Icons.Default.PersonAdd, "admin_add_candidate", Color(0xFFE91E63)))
+        items.add(DashboardItem("Manage Elections", "Create/Edit/Delete", Icons.Default.Edit, "admin_manage_elections", Color(0xFF673AB7)))
+        items.add(DashboardItem("Audit Log", "View logs", Icons.Default.History, "audit_log", Color(0xFF795548)))
+    }
+
+    val totalVotesCast = voteViewModel.getTotalVotesCast()
+    val totalPossibleVotes = electionViewModel.elections.sumOf { it.totalVoters }
+    val overallTurnout = if (totalPossibleVotes > 0) (totalVotesCast * 100 / totalPossibleVotes) else 0
+    val publishedResults = voteViewModel.getAllPublishedResults()
+    val totalPublishedResults = publishedResults.size
+
+    Scaffold(topBar = {
+        CenterAlignedTopAppBar(title = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Smart Ballot", fontWeight = FontWeight.Bold)
+                Text("Welcome, ${authViewModel.currentUser?.name?.split(" ")?.first() ?: "Voter"}${if (isAdmin) " (Admin)" else ""}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+            }
+        }, actions = {
+            IconButton(onClick = { authViewModel.logout(); navController.navigate("login") { popUpTo("dashboard") { inclusive = true } } }) {
+                Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "Logout")
+            }
+        })
+    }) { padding ->
+        LazyColumn(modifier = Modifier.padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            item {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Card(modifier = Modifier.weight(1f), colors = CardDefaults.cardColors(MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(16.dp)) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.HowToVote, contentDescription = null, tint = Color(0xFF4CAF50), modifier = Modifier.size(32.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(totalVotesCast.toString(), fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                            Text("Total Votes", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                    }
+                    Card(modifier = Modifier.weight(1f), colors = CardDefaults.cardColors(MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(16.dp)) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.People, contentDescription = null, tint = Color(0xFF2196F3), modifier = Modifier.size(32.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("$overallTurnout%", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2196F3))
+                            Text("Overall Turnout", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                    }
+                    Card(modifier = Modifier.weight(1f), colors = CardDefaults.cardColors(MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(16.dp)) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.AutoMirrored.Filled.ShowChart, contentDescription = null, tint = Color(0xFFFF9800), modifier = Modifier.size(32.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("$totalPublishedResults", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFF9800))
+                            Text("Results Published", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                    }
+                }
+            }
+            item {
+                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(16.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(electionViewModel.elections.count { it.status == ElectionStatus.ACTIVE }.toString(), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                            Text("Active", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(electionViewModel.elections.count { it.status == ElectionStatus.UPCOMING }.toString(), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2196F3))
+                            Text("Upcoming", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(electionViewModel.elections.count { it.status == ElectionStatus.COMPLETED }.toString(), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFF9E9E9E))
+                            Text("Completed", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(voteViewModel.votes.size.toString(), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFF9800))
+                            Text("Votes Cast", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                    }
+                }
+            }
+            items(items.chunked(2)) { rowItems ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    rowItems.forEach { item ->
+                        Card(modifier = Modifier.weight(1f).aspectRatio(1f).clickable { navController.navigate(item.route) }, elevation = CardDefaults.cardElevation(4.dp), shape = RoundedCornerShape(16.dp)) {
+                            Column(modifier = Modifier.fillMaxSize().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                                Box(modifier = Modifier.size(48.dp).background(item.color.copy(alpha = 0.1f), CircleShape), contentAlignment = Alignment.Center) {
+                                    Icon(item.icon, contentDescription = null, tint = item.color, modifier = Modifier.size(28.dp))
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(item.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                Text(item.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            }
+                        }
+                    }
+                    if (rowItems.size == 1) Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+        }
+    }
 }
 
-// ==================== UPCOMING ELECTIONS PAGE ====================
+// ==================== ELECTION LIST SCREEN ====================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ElectionListScreen(title: String, elections: List<Election>, navController: NavController, isActive: Boolean, onElectionClick: (Election) -> Unit) {
+    Scaffold(topBar = {
+        TopAppBar(title = { Text(title) }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White, navigationIconContentColor = Color.White))
+    }) { padding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (elections.isEmpty()) {
+                item {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text("No ${if (isActive) "active" else "upcoming"} elections", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                    }
+                }
+            } else {
+                items(elections) { election ->
+                    Card(modifier = Modifier.fillMaxWidth().clickable(enabled = isActive) { onElectionClick(election) }, elevation = CardDefaults.cardElevation(4.dp), shape = RoundedCornerShape(12.dp)) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text(election.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                                Surface(shape = RoundedCornerShape(8.dp), color = if (isActive) Color(0xFF4CAF50).copy(alpha = 0.2f) else Color(0xFF2196F3).copy(alpha = 0.2f)) {
+                                    Text(if (isActive) "LIVE" else "UPCOMING", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = if (isActive) Color(0xFF4CAF50) else Color(0xFF2196F3), fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(election.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), maxLines = 2)
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.DateRange, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary); Spacer(modifier = Modifier.width(4.dp)); Text(election.date.take(30), style = MaterialTheme.typography.bodySmall) }
+                                Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.LocationOn, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary); Spacer(modifier = Modifier.width(4.dp)); Text(election.location.take(20), style = MaterialTheme.typography.bodySmall) }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("${election.candidates.size} Candidates", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            if (isActive) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Button(onClick = { onElectionClick(election) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Color(0xFF4CAF50)), shape = RoundedCornerShape(8.dp)) {
+                                    Icon(Icons.Default.HowToVote, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Vote Now", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ActiveElectionsPage(navController: NavController, electionViewModel: ElectionViewModel, voteViewModel: VoteViewModel, authViewModel: AuthViewModel) {
+    ElectionListScreen("Active Elections", electionViewModel.elections.filter { it.status == ElectionStatus.ACTIVE }, navController, true) { navController.navigate("election_detail/${it.id}") }
+}
 
 @Composable
 fun UpcomingElectionsPage(navController: NavController, electionViewModel: ElectionViewModel) {
-    val upcomingElections = electionViewModel.elections.filter { it.status == ElectionStatus.UPCOMING }
-
-    ElectionListScreen(
-        title = "Upcoming Elections",
-        elections = upcomingElections,
-        navController = navController,
-        isActive = false,
-        onElectionClick = { }
-    )
+    ElectionListScreen("Upcoming Elections", electionViewModel.elections.filter { it.status == ElectionStatus.UPCOMING }, navController, false) {}
 }
 
 // ==================== MY VOTES PAGE ====================
@@ -2022,1530 +704,842 @@ fun UpcomingElectionsPage(navController: NavController, electionViewModel: Elect
 @Composable
 fun MyVotesPage(navController: NavController, voteViewModel: VoteViewModel, authViewModel: AuthViewModel) {
     val userVotes = voteViewModel.getUserVotes(authViewModel.currentUser?.id ?: 0)
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("My Voting History") },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White
-                )
-            )
-        }
-    ) { paddingValues ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
+    Scaffold(topBar = {
+        TopAppBar(title = { Text("My Voting History") }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White, navigationIconContentColor = Color.White))
+    }) { padding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             if (userVotes.isEmpty()) {
                 item {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Default.HowToVote,
-                                contentDescription = null,
-                                modifier = Modifier.size(80.dp),
-                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                            )
+                            Icon(Icons.Default.HowToVote, contentDescription = null, modifier = Modifier.size(80.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
                             Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                "No voting history yet",
-                                style = MaterialTheme.typography.headlineSmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
-                            Text(
-                                "Your voted elections will appear here",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                            )
+                            Text("No voting history yet", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            Text("Your voted elections will appear here", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                         }
                     }
                 }
             } else {
                 items(userVotes) { vote ->
-                    HistoryCard(vote = vote)
+                    Card(modifier = Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(4.dp), shape = RoundedCornerShape(12.dp)) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text(vote.electionTitle, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                                Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF4CAF50).copy(alpha = 0.2f)) {
+                                    Text("VOTED", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = Color(0xFF4CAF50), fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Voted for: ", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                                Text("${vote.candidateName} (${vote.candidateParty})", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Cast on: ${android.text.format.DateFormat.format("MMM dd, yyyy 'at' hh:mm a", vote.timestamp)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-@Composable
-fun HistoryCard(vote: VoteViewModel.Vote) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    vote.electionTitle,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF4CAF50).copy(alpha = 0.2f)
-                ) {
-                    Text(
-                        "VOTED",
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF4CAF50),
-                        fontWeight = FontWeight.Bold
-                    )
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "Voted for: ",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                    )
-                    Text(
-                        "${vote.candidateName} (${vote.candidateParty})",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    "Cast on: ${android.text.format.DateFormat.format("MMM dd, yyyy 'at' hh:mm a", vote.timestamp)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                )
-            }
-        }
-    }
-
 // ==================== CANDIDATES PAGE ====================
 
-    @OptIn(ExperimentalMaterial3Api::class)
-    @Composable
-    fun CandidatesPage(navController: NavController, electionViewModel: ElectionViewModel) {
-        val allCandidates = remember(electionViewModel.elections) {
-            electionViewModel.elections.flatMap { election ->
-                election.candidates.map { candidate ->
-                    Triple(election.title, candidate, election.id)
-                }
-            }
-        }
-
-        var selectedElection by remember { mutableStateOf<String?>(null) }
-        val filteredCandidates = if (selectedElection == null) {
-            allCandidates
-        } else {
-            allCandidates.filter { it.first == selectedElection }
-        }
-
-        val elections = electionViewModel.elections.map { it.title }.distinct()
-
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Candidate Profiles") },
-                    navigationIcon = {
-                        IconButton(onClick = { navController.popBackStack() }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        titleContentColor = Color.White,
-                        navigationIconContentColor = Color.White
-                    )
-                )
-            }
-        ) { paddingValues ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-            ) {
-                LazyRow(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    item {
-                        FilterChip(
-                            selected = selectedElection == null,
-                            onClick = { selectedElection = null },
-                            label = { Text("All Elections") }
-                        )
-                    }
-                    items(elections) { election ->
-                        FilterChip(
-                            selected = selectedElection == election,
-                            onClick = { selectedElection = election },
-                            label = { Text(election.take(20)) }
-                        )
-                    }
-                }
-
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(16.dp)
-                ) {
-                    items(filteredCandidates) { (electionTitle, candidate, electionId) ->
-                        CandidateDetailCard(
-                            candidate = candidate,
-                            electionTitle = electionTitle,
-                            electionId = electionId,
-                            navController = navController
-                        )
-                    }
-                }
-            }
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CandidatesPage(navController: NavController, electionViewModel: ElectionViewModel, authViewModel: AuthViewModel) {
+    val allCandidates = electionViewModel.elections.flatMap { election ->
+        election.candidates.map { candidate ->
+            CandidateWithDetails(electionTitle = election.title, candidate = candidate, electionId = election.id, electionStatus = election.status)
         }
     }
 
-    @Composable
-    fun CandidateDetailCard(
-        candidate: Candidate,
-        electionTitle: String,
-        electionId: String,
-        navController: NavController
-    ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.Top
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(60.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        candidate.symbol,
-                        fontSize = 32.sp
-                    )
-                }
+    var selectedElection by remember { mutableStateOf<String?>(null) }
+    val filtered = if (selectedElection == null) allCandidates else allCandidates.filter { it.electionTitle == selectedElection }
+    val elections = electionViewModel.elections.map { it.title }.distinct()
+    val isAdmin = authViewModel.isAdmin()
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var candidateToDelete by remember { mutableStateOf<Pair<String, String>?>(null) }
 
-                Spacer(modifier = Modifier.width(16.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        candidate.name,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "${candidate.party} • ${electionTitle}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        candidate.description,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        maxLines = 3
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Button(
-                        onClick = { navController.navigate("election_detail/$electionId") },
-                        modifier = Modifier.height(36.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF4CAF50)
-                        )
-                    ) {
-                        Icon(Icons.Default.HowToVote, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Vote Now", fontSize = 13.sp)
-                    }
-                }
+    Scaffold(topBar = {
+        TopAppBar(title = { Text("Candidate Profiles") }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White, navigationIconContentColor = Color.White))
+    }) { padding ->
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            LazyRow(modifier = Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item { FilterChip(selected = selectedElection == null, onClick = { selectedElection = null }, label = { Text("All Elections") }) }
+                items(elections) { electionName -> FilterChip(selected = selectedElection == electionName, onClick = { selectedElection = electionName }, label = { Text(electionName.take(20)) }) }
             }
-        }
-    }
-
-// ==================== RESULTS PAGE ====================
-
-    @OptIn(ExperimentalMaterial3Api::class)
-    @Composable
-    fun ResultsPage(navController: NavController, electionViewModel: ElectionViewModel, voteViewModel: VoteViewModel) {
-        val completedElections = electionViewModel.elections.filter { it.status == ElectionStatus.COMPLETED }
-
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Election Results") },
-                    navigationIcon = {
-                        IconButton(onClick = { navController.popBackStack() }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        titleContentColor = Color.White,
-                        navigationIconContentColor = Color.White
-                    )
-                )
-            }
-        ) { paddingValues ->
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                if (completedElections.isEmpty()) {
+            LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(16.dp)) {
+                if (filtered.isEmpty()) {
                     item {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    Icons.Default.BarChart,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(80.dp),
-                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                                )
+                                Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
                                 Spacer(modifier = Modifier.height(16.dp))
-                                Text(
-                                    "No Results Available",
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                )
-                                Text(
-                                    "Completed election results will appear here",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                                )
-                                )
-                            }
-                        }
-                    } else {
-                        items(completedElections) { election ->
-                            val results = voteViewModel.getElectionResults(election.id)
-                            val winnerId = results.maxByOrNull { it.value }?.key
-                            val winner = election.candidates.find { it.id == winnerId }
-                            val turnout = voteViewModel.getVoterTurnout(election.id, election.totalVoters)
-
-                            ResultCard(
-                                election = election,
-                                winner = winner,
-                                turnout = turnout,
-                                onClick = { navController.navigate("results_detail/${election.id}") }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        @Composable
-        fun ResultCard(election: Election, winner: Candidate?, turnout: Int, onClick: () -> Unit) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onClick() },
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        election.title,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    if (winner != null) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "Winner: ",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                                )
-                                Text(
-                                    "${winner.symbol} ${winner.name}",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF4CAF50)
-                                )
-                            }
-                            Icon(
-                                Icons.Default.TrendingUp,
-                                contentDescription = null,
-                                tint = Color(0xFF4CAF50)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        LinearProgressIndicator(
-                            progress = turnout / 100f,
-                            modifier = Modifier.fillMaxWidth(),
-                            color = Color(0xFF4CAF50),
-                            trackColor = Color(0xFFE0E0E0)
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Turnout: $turnout%", style = MaterialTheme.typography.bodySmall)
-                            Text("Total Voters: ${election.totalVoters}", style = MaterialTheme.typography.bodySmall)
-                        }
-                    } else {
-                        Text(
-                            "No votes cast yet",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        )
-                    }
-                }
-            }
-        }
-
-// ==================== RESULTS DETAIL SCREEN ====================
-
-        @OptIn(ExperimentalMaterial3Api::class)
-        @Composable
-        fun ResultsDetailScreen(
-            electionId: String,
-            navController: NavController,
-            electionViewModel: ElectionViewModel,
-            voteViewModel: VoteViewModel
-        ) {
-            val election = electionViewModel.getElectionById(electionId)
-            val results = voteViewModel.getElectionResults(electionId)
-            val totalVotes = results.values.sum()
-
-            Scaffold(
-                topBar = {
-                    TopAppBar(
-                        title = { Text("Election Results") },
-                        navigationIcon = {
-                            IconButton(onClick = { navController.popBackStack() }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                            }
-                        }
-                    )
-                }
-            ) { paddingValues ->
-                election?.let { selectedElection ->
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(paddingValues)
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        item {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                                ),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Text(
-                                        selectedElection.title,
-                                        style = MaterialTheme.typography.headlineSmall,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        "Final Results",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = Color(0xFF4CAF50)
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        "Date: ${selectedElection.date}",
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                    Text(
-                                        "Total Votes Cast: $totalVotes",
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                    Text(
-                                        "Voter Turnout: ${voteViewModel.getVoterTurnout(electionId, selectedElection.totalVoters)}%",
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                }
-                            }
-                        }
-
-                        item {
-                            Text(
-                                "Vote Distribution",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        items(selectedElection.candidates) { candidate ->
-                            val votes = results[candidate.id] ?: 0
-                            val percentage = if (totalVotes > 0) (votes * 100.0 / totalVotes).toInt() else 0
-                            val isWinner = votes == results.maxByOrNull { it.value }?.value && votes > 0
-
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (isWinner)
-                                        Color(0xFF4CAF50).copy(alpha = 0.1f)
-                                    else
-                                        MaterialTheme.colorScheme.surface
-                                ),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                candidate.symbol,
-                                                fontSize = 28.sp
-                                            )
-                                            Spacer(modifier = Modifier.width(12.dp))
-                                            Column {
-                                                Text(
-                                                    candidate.name,
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                                Text(
-                                                    candidate.party,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.primary
-                                                )
-                                            }
-                                        }
-                                        if (isWinner) {
-                                            Surface(
-                                                shape = RoundedCornerShape(8.dp),
-                                                color = Color(0xFF4CAF50)
-                                            ) {
-                                                Text(
-                                                    "WINNER",
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = Color.White,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text("$percentage%", fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
-                                        Text("$votes votes", style = MaterialTheme.typography.bodySmall)
-                                    }
-                                    LinearProgressIndicator(
-                                        progress = (percentage / 100f),
-                                        modifier = Modifier.fillMaxWidth(),
-                                        color = if (isWinner) Color(0xFF4CAF50) else Color(0xFF2196F3),
-                                        trackColor = Color(0xFFE0E0E0)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-// ==================== SETTINGS PAGE ====================
-
-        @OptIn(ExperimentalMaterial3Api::class)
-        @Composable
-        fun SettingsPage(navController: NavController, authViewModel: AuthViewModel) {
-            var notificationsEnabled by remember { mutableStateOf(true) }
-            var showDeleteDialog by remember { mutableStateOf(false) }
-            var showPasswordDialog by remember { mutableStateOf(false) }
-            var oldPassword by remember { mutableStateOf("") }
-            var newPassword by remember { mutableStateOf("") }
-            var confirmPassword by remember { mutableStateOf("") }
-            var passwordErrorMessage by remember { mutableStateOf<String?>(null) }
-
-            Scaffold(
-                topBar = {
-                    TopAppBar(
-                        title = { Text("Settings") },
-                        navigationIcon = {
-                            IconButton(onClick = { navController.popBackStack() }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            titleContentColor = Color.White,
-                            navigationIconContentColor = Color.White
-                        )
-                    )
-                }
-            ) { paddingValues ->
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    item {
-                        SettingsCard(
-                            title = "Account Information",
-                            icon = Icons.Default.Person
-                        ) {
-                            SettingsItem(
-                                label = "Name",
-                                value = authViewModel.currentUser?.name ?: "Not set",
-                                icon = Icons.Default.PersonOutline
-                            )
-                            SettingsItem(
-                                label = "Email",
-                                value = authViewModel.currentUser?.email ?: "Not set",
-                                icon = Icons.Default.Email
-                            )
-                            if (authViewModel.isAdmin()) {
-                                SettingsItem(
-                                    label = "Role",
-                                    value = "Administrator",
-                                    icon = Icons.Default.AdminPanelSettings
-                                )
-                            }
-                        }
-                    }
-
-                    item {
-                        SettingsCard(
-                            title = "Preferences",
-                            icon = Icons.Default.Settings
-                        ) {
-                            SettingsSwitchItem(
-                                label = "Push Notifications",
-                                checked = notificationsEnabled,
-                                onCheckedChange = { notificationsEnabled = it },
-                                icon = Icons.Default.Notifications
-                            )
-                        }
-                    }
-
-                    item {
-                        SettingsCard(
-                            title = "Security",
-                            icon = Icons.Default.Lock
-                        ) {
-                            SettingsActionItem(
-                                label = "Change Password",
-                                icon = Icons.Default.LockReset,
-                                onClick = { showPasswordDialog = true }
-                            )
-                        }
-                    }
-
-                    item {
-                        Button(
-                            onClick = { showDeleteDialog = true },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error
-                            ),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.Default.Delete, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Delete Account")
-                        }
-                    }
-
-                    item {
-                        TextButton(
-                            onClick = {
-                                authViewModel.logout()
-                                navController.navigate("login") {
-                                    popUpTo("dashboard") { inclusive = true }
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp)
-                        ) {
-                            Text("Logout", color = MaterialTheme.colorScheme.error)
-                        }
-                    }
-                }
-            }
-
-            if (showPasswordDialog) {
-                AlertDialog(
-                    onDismissRequest = {
-                        showPasswordDialog = false
-                        passwordErrorMessage = null
-                        oldPassword = ""
-                        newPassword = ""
-                        confirmPassword = ""
-                    },
-                    title = { Text("Change Password") },
-                    text = {
-                        Column {
-                            OutlinedTextField(
-                                value = oldPassword,
-                                onValueChange = {
-                                    oldPassword = it
-                                    passwordErrorMessage = null
-                                },
-                                label = { Text("Current Password") },
-                                visualTransformation = PasswordVisualTransformation(),
-                                modifier = Modifier.fillMaxWidth(),
-                                isError = passwordErrorMessage != null
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            OutlinedTextField(
-                                value = newPassword,
-                                onValueChange = {
-                                    newPassword = it
-                                    passwordErrorMessage = null
-                                },
-                                label = { Text("New Password") },
-                                visualTransformation = PasswordVisualTransformation(),
-                                modifier = Modifier.fillMaxWidth(),
-                                isError = passwordErrorMessage != null
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            OutlinedTextField(
-                                value = confirmPassword,
-                                onValueChange = {
-                                    confirmPassword = it
-                                    passwordErrorMessage = null
-                                },
-                                label = { Text("Confirm New Password") },
-                                visualTransformation = PasswordVisualTransformation(),
-                                modifier = Modifier.fillMaxWidth(),
-                                isError = passwordErrorMessage != null
-                            )
-                            if (passwordErrorMessage != null) {
-                                Text(
-                                    passwordErrorMessage!!,
-                                    color = MaterialTheme.colorScheme.error,
-                                    fontSize = 12.sp
-                                )
-                            }
-                        }
-                    },
-                    confirmButton = {
-                        TextButton(
-                            onClick = {
-                                when {
-                                    oldPassword.isBlank() -> passwordErrorMessage = "Please enter current password"
-                                    newPassword.length < 6 -> passwordErrorMessage = "Password must be at least 6 characters"
-                                    newPassword != confirmPassword -> passwordErrorMessage = "Passwords do not match"
-                                    else -> {
-                                        if (authViewModel.changePassword(oldPassword, newPassword)) {
-                                            showPasswordDialog = false
-                                            oldPassword = ""
-                                            newPassword = ""
-                                            confirmPassword = ""
-                                        } else {
-                                            passwordErrorMessage = "Incorrect current password"
-                                        }
-                                    }
-                                }
-                            }
-                        ) {
-                            Text("Change")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showPasswordDialog = false }) {
-                            Text("Cancel")
-                        }
-                    }
-                )
-            }
-
-            if (showDeleteDialog) {
-                AlertDialog(
-                    onDismissRequest = { showDeleteDialog = false },
-                    title = { Text("Delete Account") },
-                    text = {
-                        Text("Are you sure? This action cannot be undone and all your data will be permanently deleted.")
-                    },
-                    confirmButton = {
-                        TextButton(
-                            onClick = {
-                                authViewModel.deleteAccount()
-                                showDeleteDialog = false
-                                navController.navigate("login") {
-                                    popUpTo("dashboard") { inclusive = true }
-                                }
-                            },
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = MaterialTheme.colorScheme.error
-                            )
-                        ) {
-                            Text("Delete")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showDeleteDialog = false }) {
-                            Text("Cancel")
-                        }
-                    }
-                )
-            }
-        }
-
-        @Composable
-        fun SettingsCard(
-            title: String,
-            icon: ImageVector,
-            content: @Composable () -> Unit
-        ) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    content()
-                }
-            }
-        }
-
-        @Composable
-        fun SettingsItem(label: String, value: String, icon: ImageVector) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text(label, style = MaterialTheme.typography.bodyMedium)
-                }
-                Text(value, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-            }
-        }
-
-        @Composable
-        fun SettingsSwitchItem(
-            label: String,
-            checked: Boolean,
-            onCheckedChange: (Boolean) -> Unit,
-            icon: ImageVector
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text(label, style = MaterialTheme.typography.bodyMedium)
-                }
-                Switch(
-                    checked = checked,
-                    onCheckedChange = onCheckedChange,
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color(0xFF4CAF50),
-                        checkedTrackColor = Color(0xFF4CAF50).copy(alpha = 0.5f)
-                    )
-                )
-            }
-        }
-
-        @Composable
-        fun SettingsActionItem(label: String, icon: ImageVector, onClick: () -> Unit) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onClick() }
-                    .padding(vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text(label, style = MaterialTheme.typography.bodyMedium)
-                }
-                Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(20.dp))
-            }
-        }
-
-// ==================== AUDIT LOG PAGE ====================
-
-        @OptIn(ExperimentalMaterial3Api::class)
-        @Composable
-        fun AuditLogPage(navController: NavController, voteViewModel: VoteViewModel, authViewModel: AuthViewModel) {
-            val auditLog = voteViewModel.auditLog
-
-            Scaffold(
-                topBar = {
-                    TopAppBar(
-                        title = { Text("Audit Log") },
-                        navigationIcon = {
-                            IconButton(onClick = { navController.popBackStack() }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            titleContentColor = Color.White,
-                            navigationIconContentColor = Color.White
-                        )
-                    )
-                }
-            ) { paddingValues ->
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues)
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (auditLog.isEmpty()) {
-                        item {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(
-                                        Icons.Default.History,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(64.dp),
-                                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                                    )
-                                    Spacer(modifier = Modifier.height(16.dp))
-                                    Text("No audit entries yet", style = MaterialTheme.typography.bodyLarge)
-                                }
-                            }
-                        }
-                    } else {
-                        items(auditLog.reversed()) { entry ->
-                            AuditEntryCard(entry = entry)
-                        }
-                    }
-                }
-            }
-        }
-
-        @Composable
-        fun AuditEntryCard(entry: VoteViewModel.AuditEntry) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            entry.action,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = when (entry.action) {
-                                "VOTE_CAST" -> Color(0xFF4CAF50)
-                                else -> MaterialTheme.colorScheme.primary
-                            }
-                        )
-                        Text(
-                            android.text.format.DateFormat.format("MMM dd, hh:mm a", entry.timestamp).toString(),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        entry.details,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                    )
-                    Text(
-                        "User: ${entry.userName} (ID: ${entry.userId})",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                    )
-                }
-            }
-        }
-
-// ==================== ELECTION LIST SCREEN ====================
-
-        @OptIn(ExperimentalMaterial3Api::class)
-        @Composable
-        fun ElectionListScreen(
-            title: String,
-            elections: List<Election>,
-            navController: NavController,
-            isActive: Boolean,
-            onElectionClick: (Election) -> Unit
-        ) {
-            Scaffold(
-                topBar = {
-                    TopAppBar(
-                        title = { Text(title) },
-                        navigationIcon = {
-                            IconButton(onClick = { navController.popBackStack() }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            titleContentColor = Color.White,
-                            navigationIconContentColor = Color.White
-                        )
-                    )
-                }
-            ) { paddingValues ->
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues)
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    if (elections.isEmpty()) {
-                        item {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(
-                                        Icons.Default.Info,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(64.dp),
-                                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                                    )
-                                    Spacer(modifier = Modifier.height(16.dp))
-                                    Text(
-                                        "No ${if (isActive) "active" else "upcoming"} elections at the moment",
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        items(elections) { election ->
-                            ElectionCard(
-                                election = election,
-                                isActive = isActive,
-                                onClick = { onElectionClick(election) }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        @Composable
-        fun ElectionCard(election: Election, isActive: Boolean, onClick: () -> Unit) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(enabled = isActive) { onClick() },
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            election.title,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        if (isActive) {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFF4CAF50).copy(alpha = 0.2f)
-                            ) {
-                                Text(
-                                    "LIVE",
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF4CAF50),
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        } else {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFF2196F3).copy(alpha = 0.2f)
-                            ) {
-                                Text(
-                                    "UPCOMING",
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF2196F3),
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        election.description,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        maxLines = 2
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.DateRange,
-                                contentDescription = "Date",
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                election.date.take(30),
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.LocationOn,
-                                contentDescription = "Location",
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                election.location.take(20),
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        "${election.candidates.size} Candidates Contesting",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-
-                    if (isActive) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Button(
-                            onClick = onClick,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Icon(Icons.Default.HowToVote, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Vote Now", fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-        }
-
-// ==================== ELECTION DETAIL SCREEN ====================
-
-        @OptIn(ExperimentalMaterial3Api::class)
-        @Composable
-        fun ElectionDetailScreen(
-            electionId: String,
-            navController: NavController,
-            electionViewModel: ElectionViewModel,
-            voteViewModel: VoteViewModel,
-            authViewModel: AuthViewModel
-        ) {
-            var selectedCandidate by remember { mutableStateOf<Candidate?>(null) }
-            var showConfirmation by remember { mutableStateOf(false) }
-            var showSuccess by remember { mutableStateOf(false) }
-            var showAlreadyVoted by remember { mutableStateOf(false) }
-
-            val election = electionViewModel.getElectionById(electionId)
-            val hasVoted = authViewModel.hasVoted(electionId)
-
-            Scaffold(
-                topBar = {
-                    TopAppBar(
-                        title = { Text(election?.title?.take(20) ?: "Election Details") },
-                        navigationIcon = {
-                            IconButton(onClick = { navController.popBackStack() }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            titleContentColor = Color.White,
-                            navigationIconContentColor = Color.White
-                        )
-                    )
-                }
-            ) { paddingValues ->
-                if (hasVoted) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(paddingValues),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Default.CheckCircle,
-                                contentDescription = null,
-                                modifier = Modifier.size(80.dp),
-                                tint = Color(0xFF4CAF50)
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                "You have already voted in this election!",
-                                style = MaterialTheme.typography.headlineSmall,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Button(onClick = { navController.popBackStack() }) {
-                                Text("Go Back")
+                                Text("No candidates found", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                             }
                         }
                     }
                 } else {
-                    election?.let { selectedElection ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(paddingValues)
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                                ),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Text(
-                                        "Election Details",
-                                        style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        selectedElection.description,
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    HorizontalDivider()
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.DateRange, contentDescription = "Date", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(selectedElection.date, style = MaterialTheme.typography.bodySmall)
+                    items(filtered) { candidateDetails ->
+                        Card(modifier = Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(4.dp), shape = RoundedCornerShape(12.dp)) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+                                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                        Box(modifier = Modifier.size(60.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)), contentAlignment = Alignment.Center) { Text(candidateDetails.candidate.symbol, fontSize = 32.sp) }
+                                        Spacer(modifier = Modifier.width(16.dp))
+                                        Column {
+                                            Text(candidateDetails.candidate.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                                            Text("${candidateDetails.candidate.party} • ${candidateDetails.electionTitle}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                                            val statusColor = when (candidateDetails.electionStatus) {
+                                                ElectionStatus.ACTIVE -> Color(0xFF4CAF50)
+                                                ElectionStatus.UPCOMING -> Color(0xFF2196F3)
+                                                else -> Color(0xFF9E9E9E)
+                                            }
+                                            Text("Status: ${candidateDetails.electionStatus.name}", style = MaterialTheme.typography.bodySmall, color = statusColor)
+                                        }
                                     }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.LocationOn, contentDescription = "Location", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(selectedElection.location, style = MaterialTheme.typography.bodySmall)
-                                    }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.People, contentDescription = "Voters", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Total Voters: ${selectedElection.totalVoters}", style = MaterialTheme.typography.bodySmall)
+                                    if (isAdmin && candidateDetails.electionStatus != ElectionStatus.COMPLETED) {
+                                        Row {
+                                            IconButton(onClick = { navController.navigate("edit_candidate/${candidateDetails.electionId}/${candidateDetails.candidate.id}") }) {
+                                                Icon(Icons.Default.Edit, contentDescription = "Edit", tint = Color(0xFF2196F3))
+                                            }
+                                            IconButton(onClick = { candidateToDelete = Pair(candidateDetails.electionId, candidateDetails.candidate.id); showDeleteDialog = true }) {
+                                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
+                                            }
+                                        }
                                     }
                                 }
-                            }
-
-                            Text(
-                                "Select Your Candidate",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-
-                            LazyColumn(
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                items(selectedElection.candidates) { candidate ->
-                                    CandidateCard(
-                                        candidate = candidate,
-                                        isSelected = selectedCandidate?.id == candidate.id,
-                                        onSelect = { selectedCandidate = candidate }
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = {
-                                    if (selectedCandidate != null) {
-                                        showConfirmation = true
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                enabled = selectedCandidate != null,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF4CAF50),
-                                    disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                                ),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Icon(Icons.Default.HowToVote, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Submit Vote", fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    } ?: run {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.Default.Error, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.error)
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text("Election not found", style = MaterialTheme.typography.headlineSmall)
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Button(onClick = { navController.popBackStack() }) {
-                                    Text("Go Back")
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(candidateDetails.candidate.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), maxLines = 3)
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Button(onClick = { navController.navigate("election_detail/${candidateDetails.electionId}") }, modifier = Modifier.fillMaxWidth().height(36.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))) {
+                                    Icon(Icons.Default.HowToVote, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Vote Now", fontSize = 13.sp)
                                 }
                             }
                         }
                     }
                 }
             }
-
-            if (showConfirmation && selectedCandidate != null && election != null) {
-                AlertDialog(
-                    onDismissRequest = { showConfirmation = false },
-                    title = { Text("Confirm Your Vote") },
-                    text = {
-                        Column {
-                            Text("You are voting for:")
-                            Text(
-                                "${selectedCandidate!!.symbol} ${selectedCandidate!!.name}",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF4CAF50)
-                            )
-                            Text("Party: ${selectedCandidate!!.party}")
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("Election: ${election.title}", style = MaterialTheme.typography.bodySmall)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("This action cannot be undone.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                        }
-                    },
-                    confirmButton = {
-                        TextButton(
-                            onClick = {
-                                val success = voteViewModel.castVote(
-                                    voterId = authViewModel.currentUser?.id ?: 0,
-                                    voterName = authViewModel.currentUser?.name ?: "",
-                                    electionId = election.id,
-                                    electionTitle = election.title,
-                                    candidateId = selectedCandidate!!.id,
-                                    candidateName = selectedCandidate!!.name,
-                                    candidateParty = selectedCandidate!!.party
-                                )
-                                if (success) {
-                                    authViewModel.markVoted(election.id)
-                                    showConfirmation = false
-                                    showSuccess = true
-                                } else {
-                                    showConfirmation = false
-                                    showAlreadyVoted = true
-                                }
-                            },
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = Color(0xFF4CAF50)
-                            )
-                        ) {
-                            Text("Confirm Vote")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showConfirmation = false }) {
-                            Text("Cancel")
-                        }
-                    }
-                )
-            }
-
-            if (showSuccess) {
-                AlertDialog(
-                    onDismissRequest = {
-                        showSuccess = false
-                        navController.popBackStack()
-                    },
-                    icon = {
-                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50), modifier = Modifier.size(48.dp))
-                    },
-                    title = { Text("Vote Cast Successfully!") },
-                    text = { Text("Thank you for participating in the democratic process. Your vote has been recorded.") },
-                    confirmButton = {
-                        TextButton(
-                            onClick = {
-                                showSuccess = false
-                                navController.popBackStack()
-                            },
-                            colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF4CAF50))
-                        ) {
-                            Text("Done")
-                        }
-                    }
-                )
-            }
-
-            if (showAlreadyVoted) {
-                AlertDialog(
-                    onDismissRequest = {
-                        showAlreadyVoted = false
-                        navController.popBackStack()
-                    },
-                    icon = {
-                        Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF9800), modifier = Modifier.size(48.dp))
-                    },
-                    title = { Text("Already Voted") },
-                    text = { Text("You have already cast your vote in this election. You cannot vote again.") },
-                    confirmButton = {
-                        TextButton(
-                            onClick = {
-                                showAlreadyVoted = false
-                                navController.popBackStack()
-                            }
-                        ) {
-                            Text("OK")
-                        }
-                    }
-                )
-            }
         }
+    }
+    if (showDeleteDialog && candidateToDelete != null) {
+        val (electionId, candidateId) = candidateToDelete!!
+        val candidate = electionViewModel.elections.find { it.id == electionId }?.candidates?.find { it.id == candidateId }
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false; candidateToDelete = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    electionViewModel.removeCandidate(electionId, candidateId)
+                    showDeleteDialog = false
+                    candidateToDelete = null
+                }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") }
+            },
+            dismissButton = { TextButton({ showDeleteDialog = false; candidateToDelete = null }) { Text("Cancel") } },
+            title = { Text("Delete Candidate") },
+            text = { Text("Delete ${candidate?.name ?: "this candidate"}? This action cannot be undone!") }
+        )
+    }
+}
 
-        @Composable
-        fun CandidateCard(candidate: Candidate, isSelected: Boolean, onSelect: () -> Unit) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onSelect() },
-                elevation = CardDefaults.cardElevation(defaultElevation = if (isSelected) 8.dp else 2.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isSelected)
-                        MaterialTheme.colorScheme.primaryContainer
-                    else
-                        MaterialTheme.colorScheme.surface
-                ),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically
+// ==================== RESULTS PAGE ====================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ResultsPage(navController: NavController, electionViewModel: ElectionViewModel, voteViewModel: VoteViewModel, authViewModel: AuthViewModel) {
+    val isAdmin = authViewModel.isAdmin()
+    val activeElections = electionViewModel.elections.filter { it.status == ElectionStatus.ACTIVE }
+    val publishedResults = voteViewModel.getAllPublishedResults()
+    var showPublishDialog by remember { mutableStateOf<Election?>(null) }
+    var showSuccessMessage by remember { mutableStateOf<String?>(null) }
+
+    Scaffold(topBar = {
+        TopAppBar(title = { Text("Election Results") }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White, navigationIconContentColor = Color.White))
+    }) { padding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (isAdmin && activeElections.isNotEmpty()) {
+                item {
+                    Text("Publish Results", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("Select an election to publish final results", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                }
+                items(activeElections) { election ->
+                    val votesCast = voteViewModel.getVotesCountForElection(election.id)
+                    val currentTurnout = if (election.totalVoters > 0) (votesCast * 100 / election.totalVoters) else 0
+                    val hasVotes = votesCast > 0
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(if (hasVotes) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(50.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(candidate.symbol, fontSize = 28.sp)
-                        }
-
-                        Spacer(modifier = Modifier.width(12.dp))
-
-                        Column {
-                            Text(candidate.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Text(candidate.party, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(candidate.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), maxLines = 2)
+                        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column {
+                                Text(election.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text("Votes Cast: $votesCast / ${election.totalVoters}", style = MaterialTheme.typography.bodySmall, color = if (hasVotes) Color(0xFF4CAF50) else Color(0xFFF44336))
+                                Text("Current Turnout: $currentTurnout%", style = MaterialTheme.typography.bodySmall, color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)
+                                if (!hasVotes) Text("No votes to publish", style = MaterialTheme.typography.bodySmall, color = Color(0xFFF44336))
+                            }
+                            Button(onClick = { if (hasVotes) showPublishDialog = election }, enabled = hasVotes, colors = ButtonDefaults.buttonColors(containerColor = if (hasVotes) Color(0xFF4CAF50) else Color.Gray)) {
+                                Icon(Icons.Default.Publish, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Publish", fontSize = 12.sp)
+                            }
                         }
                     }
+                }
+                item { Spacer(modifier = Modifier.height(8.dp)) }
+            }
 
-                    RadioButton(
-                        selected = isSelected,
-                        onClick = onSelect,
-                        colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF4CAF50))
-                    )
+            if (publishedResults.isNotEmpty()) {
+                item {
+                    Text("Published Results", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("Official election winners and vote counts", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                }
+                items(publishedResults) { result ->
+                    Card(modifier = Modifier.fillMaxWidth().clickable { navController.navigate("results_detail/${result.electionId}") }, elevation = CardDefaults.cardElevation(4.dp), shape = RoundedCornerShape(12.dp)) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text(result.electionTitle, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                                Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF4CAF50).copy(alpha = 0.2f)) {
+                                    Text("OFFICIAL", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = Color(0xFF4CAF50), fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(Color(0xFF4CAF50).copy(alpha = 0.1f)), shape = RoundedCornerShape(8.dp)) {
+                                Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("🏆", fontSize = 32.sp)
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text("WINNER", style = MaterialTheme.typography.labelSmall, color = Color(0xFF4CAF50), fontWeight = FontWeight.Bold)
+                                        Text(result.winnerName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                        Text(result.winnerParty, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    Spacer(modifier = Modifier.weight(1f))
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text("${result.totalVotes} votes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                                        Text("${result.turnout}% turnout", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("Top Candidates", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            val sortedResults = result.results.entries.sortedByDescending { it.value }.take(3)
+                            sortedResults.forEachIndexed { index, (candidateId, voteCount) ->
+                                val candidate = electionViewModel.getElectionById(result.electionId)?.candidates?.find { it.id == candidateId }
+                                if (candidate != null) {
+                                    val percentage = if (result.totalVotes > 0) (voteCount * 100 / result.totalVotes) else 0
+                                    Column {
+                                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Text("${index + 1}.", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, modifier = Modifier.width(30.dp))
+                                            Text(candidate.symbol, fontSize = 16.sp, modifier = Modifier.width(36.dp))
+                                            Text(candidate.name.take(20), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                                            Text("$voteCount votes ($percentage%)", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                                        }
+                                        LinearProgressIndicator(progress = { percentage.toFloat() / 100f }, modifier = Modifier.fillMaxWidth(), color = Color(0xFF4CAF50), trackColor = Color(0xFFE0E0E0))
+                                    }
+                                }
+                            }
+                            Text("Published: ${android.text.format.DateFormat.format("MMM dd, yyyy 'at' hh:mm a", result.publishedAt)}", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        }
+                    }
+                }
+            }
+
+            if (publishedResults.isEmpty() && activeElections.isEmpty()) {
+                item {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.BarChart, contentDescription = null, modifier = Modifier.size(80.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text("No Results Available", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            Text("Published election results will appear here", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                        }
+                    }
                 }
             }
         }
+    }
 
-// ==================== UTILITY FUNCTIONS ====================
+    if (showPublishDialog != null) {
+        val election = showPublishDialog!!
+        val results = voteViewModel.getElectionResults(election.id)
+        val totalVotes = results.values.sum()
+        val winnerId = results.maxByOrNull { it.value }?.key
+        val winner = election.candidates.find { it.id == winnerId }
+        val votesCast = voteViewModel.getVotesCountForElection(election.id)
+        val currentTurnout = if (election.totalVoters > 0) (votesCast * 100 / election.totalVoters) else 0
 
-        fun isValidEmail(email: String): Boolean {
-            return Patterns.EMAIL_ADDRESS.matcher(email).matches()
+        AlertDialog(
+            onDismissRequest = { showPublishDialog = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    val publishedResult = voteViewModel.publishResults(election.id, election.title, election.totalVoters, winner?.symbol ?: "")
+                    if (publishedResult != null) {
+                        showSuccessMessage = "Results for \"${election.title}\" have been published!\n\nWinner: ${publishedResult.winnerName} with ${publishedResult.totalVotes} votes\nTurnout: ${publishedResult.turnout}%"
+                    } else {
+                        showSuccessMessage = "Failed to publish results. No votes were cast."
+                    }
+                    showPublishDialog = null
+                }) { Text("Publish") }
+            },
+            dismissButton = { TextButton({ showPublishDialog = null }) { Text("Cancel") } },
+            title = { Text("Publish Final Results?") },
+            text = {
+                Column {
+                    Text("Are you sure you want to publish final results for:")
+                    Text(election.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                    Spacer(modifier = Modifier.height(12.dp))
+                    if (winner != null && totalVotes > 0) {
+                        Card(colors = CardDefaults.cardColors(Color(0xFF4CAF50).copy(alpha = 0.1f)), shape = RoundedCornerShape(8.dp)) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text("🏆 WINNER", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                                Text("${winner.name} (${winner.party})", fontWeight = FontWeight.Bold)
+                                Text("Total Votes: $totalVotes")
+                                Text("Turnout: $currentTurnout%")
+                            }
+                        }
+                    } else {
+                        Text("⚠️ No votes have been cast yet!", color = MaterialTheme.colorScheme.error)
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("Once published, results will be visible to all users and cannot be changed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        )
+    }
+
+    if (showSuccessMessage != null) {
+        AlertDialog(
+            onDismissRequest = { showSuccessMessage = null },
+            confirmButton = { TextButton({ showSuccessMessage = null }) { Text("OK") } },
+            title = { Text("Success!") },
+            text = { Text(showSuccessMessage!!) }
+        )
+    }
+}
+// ==================== RESULTS DETAIL SCREEN ====================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ResultsDetailScreen(electionId: String, navController: NavController, electionViewModel: ElectionViewModel, voteViewModel: VoteViewModel) {
+    val election = electionViewModel.getElectionById(electionId)
+    val publishedResult = voteViewModel.getPublishedResults(electionId)
+
+    Scaffold(topBar = {
+        TopAppBar(title = { Text(publishedResult?.electionTitle?.take(20) ?: "Election Results") }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF4CAF50), titleContentColor = Color.White, navigationIconContentColor = Color.White))
+    }) { padding ->
+        if (publishedResult != null) {
+            LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                item {
+                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(12.dp)) {
+                        Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("OFFICIAL RESULTS", style = MaterialTheme.typography.labelSmall, color = Color(0xFF4CAF50), fontWeight = FontWeight.Bold)
+                            Text(publishedResult.electionTitle, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                            Text("Published: ${android.text.format.DateFormat.format("MMM dd, yyyy 'at' hh:mm a", publishedResult.publishedAt)}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                item {
+                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(Color(0xFFFFD700).copy(alpha = 0.15f)), shape = RoundedCornerShape(12.dp), elevation = CardDefaults.cardElevation(4.dp)) {
+                        Column(modifier = Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("🏆", fontSize = 48.sp)
+                            Text("WINNER", style = MaterialTheme.typography.labelMedium, color = Color(0xFFFFD700), fontWeight = FontWeight.Bold)
+                            Text(publishedResult.winnerName, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                            Text(publishedResult.winnerParty, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                            Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF4CAF50)) {
+                                Text("${publishedResult.totalVotes} TOTAL VOTES", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color.White)
+                            }
+                        }
+                    }
+                }
+                item {
+                    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("${publishedResult.totalVotes}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                                Text("Total Votes", style = MaterialTheme.typography.bodySmall)
+                            }
+                            VerticalDivider(modifier = Modifier.height(40.dp))
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("${publishedResult.turnout}%", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Color(0xFF2196F3))
+                                Text("Turnout", style = MaterialTheme.typography.bodySmall)
+                            }
+                            VerticalDivider(modifier = Modifier.height(40.dp))
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("${publishedResult.results.size}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Color(0xFFFF9800))
+                                Text("Candidates", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+                item { Text("Vote Distribution", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+                items(election?.candidates ?: emptyList()) { candidate ->
+                    val votes = publishedResult.results[candidate.id] ?: 0
+                    val percentage = if (publishedResult.totalVotes > 0) (votes * 100 / publishedResult.totalVotes) else 0
+                    val isWinner = candidate.id == publishedResult.winnerId
+                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(if (isWinner) Color(0xFF4CAF50).copy(alpha = 0.1f) else MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(12.dp), elevation = if (isWinner) CardDefaults.cardElevation(4.dp) else CardDefaults.cardElevation(1.dp)) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(candidate.symbol, fontSize = 32.sp)
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(candidate.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                            if (isWinner) {
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFF4CAF50)) {
+                                                    Text("WINNER", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, color = Color.White, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                        }
+                                        Text(candidate.party, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text("$votes votes", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = if (isWinner) Color(0xFF4CAF50) else Color(0xFF2196F3))
+                                    Text("$percentage%", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            LinearProgressIndicator(progress = { percentage.toFloat() / 100f }, modifier = Modifier.fillMaxWidth().height(8.dp), color = if (isWinner) Color(0xFF4CAF50) else Color(0xFF2196F3), trackColor = Color(0xFFE0E0E0))
+                        }
+                    }
+                }
+            }
+        } else {
+            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                    Text("Results Not Published Yet", style = MaterialTheme.typography.headlineSmall)
+                    Text("The admin will publish results after the election concludes", style = MaterialTheme.typography.bodyMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Button(onClick = { navController.popBackStack() }) { Text("Go Back") }
+                }
+            }
         }
+    }
+}
+
+// ==================== SETTINGS PAGE ====================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsPage(navController: NavController, authViewModel: AuthViewModel) {
+    var showPasswordDialog by remember { mutableStateOf(false) }
+    var oldPassword by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    Scaffold(topBar = {
+        TopAppBar(title = { Text("Settings") }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White, navigationIconContentColor = Color.White))
+    }) { padding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item {
+                Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), elevation = CardDefaults.cardElevation(2.dp), shape = RoundedCornerShape(12.dp)) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary); Spacer(modifier = Modifier.width(8.dp)); Text("Account", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) { Row { Icon(Icons.Default.PersonOutline, contentDescription = null, modifier = Modifier.size(20.dp)); Spacer(modifier = Modifier.width(12.dp)); Text("Name") }; Text(authViewModel.currentUser?.name ?: "Not set", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)) }
+                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) { Row { Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(20.dp)); Spacer(modifier = Modifier.width(12.dp)); Text("Email") }; Text(authViewModel.currentUser?.email ?: "Not set", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)) }
+                        if (authViewModel.isAdmin()) { Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) { Row { Icon(Icons.Default.AdminPanelSettings, contentDescription = null, modifier = Modifier.size(20.dp)); Spacer(modifier = Modifier.width(12.dp)); Text("Role") }; Text("Administrator", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)) } }
+                    }
+                }
+            }
+            item {
+                Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), elevation = CardDefaults.cardElevation(2.dp), shape = RoundedCornerShape(12.dp)) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row { Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary); Spacer(modifier = Modifier.width(8.dp)); Text("Security", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(modifier = Modifier.fillMaxWidth().clickable { showPasswordDialog = true }.padding(vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) { Row { Icon(Icons.Default.LockReset, contentDescription = null, modifier = Modifier.size(20.dp)); Spacer(modifier = Modifier.width(12.dp)); Text("Change Password") }; Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(20.dp)) }
+                    }
+                }
+            }
+            item {
+                Button(onClick = { authViewModel.logout(); navController.navigate("login") { popUpTo("dashboard") { inclusive = true } } }, modifier = Modifier.fillMaxWidth().padding(16.dp), colors = ButtonDefaults.buttonColors(MaterialTheme.colorScheme.error), shape = RoundedCornerShape(12.dp)) {
+                    Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Logout")
+                }
+            }
+        }
+    }
+    if (showPasswordDialog) {
+        AlertDialog(
+            onDismissRequest = { showPasswordDialog = false; errorMessage = null; oldPassword = ""; newPassword = ""; confirmPassword = "" },
+            confirmButton = {
+                TextButton(onClick = {
+                    when {
+                        oldPassword.isBlank() -> errorMessage = "Enter current password"
+                        newPassword.length < 6 -> errorMessage = "Password must be 6+ characters"
+                        newPassword != confirmPassword -> errorMessage = "Passwords don't match"
+                        else -> if (authViewModel.changePassword(oldPassword, newPassword)) showPasswordDialog = false else errorMessage = "Incorrect password"
+                    }
+                }) { Text("Change") }
+            },
+            dismissButton = { TextButton({ showPasswordDialog = false }) { Text("Cancel") } },
+            title = { Text("Change Password") },
+            text = {
+                Column {
+                    OutlinedTextField(value = oldPassword, onValueChange = { newOld -> oldPassword = newOld; errorMessage = null }, label = { Text("Current Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), isError = errorMessage != null)
+                    OutlinedTextField(value = newPassword, onValueChange = { newPass -> newPassword = newPass; errorMessage = null }, label = { Text("New Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), isError = errorMessage != null)
+                    OutlinedTextField(value = confirmPassword, onValueChange = { newConfirm -> confirmPassword = newConfirm; errorMessage = null }, label = { Text("Confirm Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), isError = errorMessage != null)
+                    if (errorMessage != null) { Text(errorMessage!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+                }
+            }
+        )
+    }
+}
+
+// ==================== ADMIN PAGES ====================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AdminAddCandidatePage(navController: NavController, electionViewModel: ElectionViewModel) {
+    var selectedElection by remember { mutableStateOf<Election?>(null) }
+    var candidateName by remember { mutableStateOf("") }
+    var candidateParty by remember { mutableStateOf("") }
+    var candidateSymbol by remember { mutableStateOf("") }
+    var candidateDescription by remember { mutableStateOf("") }
+    var showSuccess by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    val elections = electionViewModel.elections
+
+    Scaffold(topBar = { TopAppBar(title = { Text("Add New Candidate") }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White, navigationIconContentColor = Color.White)) }) { padding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            item { Text("Select Election", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+            items(elections) { election ->
+                Card(modifier = Modifier.fillMaxWidth().clickable { selectedElection = election; candidateName = ""; candidateParty = ""; candidateSymbol = ""; candidateDescription = ""; errorMessage = null }, colors = CardDefaults.cardColors(containerColor = if (selectedElection?.id == election.id) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(12.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column { Text(election.title, fontWeight = FontWeight.Bold); Text("${election.candidates.size} candidates", style = MaterialTheme.typography.bodySmall) }
+                        if (selectedElection?.id == election.id) Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50))
+                    }
+                }
+            }
+            if (selectedElection != null) {
+                item { Text("Candidate Details", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            OutlinedTextField(value = candidateName, onValueChange = { candidateName = it; errorMessage = null }, label = { Text("Candidate Name") }, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = candidateParty, onValueChange = { candidateParty = it; errorMessage = null }, label = { Text("Party") }, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = candidateSymbol, onValueChange = { candidateSymbol = it }, label = { Text("Symbol (Emoji)") }, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = candidateDescription, onValueChange = { candidateDescription = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+                        }
+                    }
+                }
+                if (errorMessage != null) item { Text(errorMessage!!, color = MaterialTheme.colorScheme.error) }
+                item {
+                    Button(onClick = {
+                        if (candidateName.isBlank() || candidateParty.isBlank()) errorMessage = "Name and Party required"
+                        else {
+                            val newCandidate = Candidate("c${System.currentTimeMillis()}", candidateName, candidateParty, candidateSymbol.ifEmpty { "👤" }, candidateDescription.ifEmpty { "No description" })
+                            if (electionViewModel.addCandidate(selectedElection!!.id, newCandidate)) showSuccess = true else errorMessage = "Failed"
+                        }
+                    }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Color(0xFF4CAF50))) { Text("Add Candidate") }
+                }
+            }
+        }
+    }
+    if (showSuccess) AlertDialog(onDismissRequest = { showSuccess = false; navController.popBackStack() }, confirmButton = { TextButton({ showSuccess = false; navController.popBackStack() }) { Text("OK") } }, title = { Text("Success!") }, text = { Text("Candidate added successfully!") })
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AdminManageElectionsPage(navController: NavController, electionViewModel: ElectionViewModel) {
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var electionToDelete by remember { mutableStateOf<Election?>(null) }
+
+    Scaffold(topBar = { TopAppBar(title = { Text("Manage Elections") }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, actions = { IconButton(onClick = { navController.navigate("create_election") }) { Icon(Icons.Default.Add, contentDescription = "Create Election") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White, navigationIconContentColor = Color.White, actionIconContentColor = Color.White)) }) { padding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(electionViewModel.elections) { election ->
+                Card(modifier = Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(4.dp), shape = RoundedCornerShape(12.dp)) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(election.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                                Text("${election.candidates.size} candidates • ${election.totalVoters} voters", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            }
+                            Surface(shape = RoundedCornerShape(8.dp), color = when (election.status) { ElectionStatus.ACTIVE -> Color(0xFF4CAF50).copy(alpha = 0.2f); ElectionStatus.UPCOMING -> Color(0xFF2196F3).copy(alpha = 0.2f); ElectionStatus.COMPLETED -> Color(0xFF9E9E9E).copy(alpha = 0.2f) }) {
+                                Text(election.status.name, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = when (election.status) { ElectionStatus.ACTIVE -> Color(0xFF4CAF50); ElectionStatus.UPCOMING -> Color(0xFF2196F3); ElectionStatus.COMPLETED -> Color(0xFF757575) }, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        Text(election.description.take(100), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { navController.navigate("edit_election/${election.id}") }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) {
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Text("Edit", fontSize = 12.sp)
+                            }
+                            OutlinedButton(onClick = { navController.navigate("admin_add_candidate") }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF2196F3))) {
+                                Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Text("Add Candidate", fontSize = 12.sp)
+                            }
+                            if (election.status != ElectionStatus.COMPLETED) {
+                                OutlinedButton(onClick = { electionToDelete = election; showDeleteDialog = true }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Text("Delete", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                Card(modifier = Modifier.fillMaxWidth().clickable { navController.navigate("create_election") }, elevation = CardDefaults.cardElevation(2.dp), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Add, contentDescription = null)
+                        Text("Create New Election", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+    if (showDeleteDialog && electionToDelete != null) {
+        AlertDialog(onDismissRequest = { showDeleteDialog = false; electionToDelete = null }, confirmButton = { TextButton(onClick = { electionViewModel.removeElection(electionToDelete!!.id); showDeleteDialog = false; electionToDelete = null }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") } }, dismissButton = { TextButton({ showDeleteDialog = false; electionToDelete = null }) { Text("Cancel") } }, title = { Text("Delete Election") }, text = { Text("Delete \"${electionToDelete?.title}\"? This will also delete all associated votes. This action cannot be undone!") })
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditElectionPage(navController: NavController, electionViewModel: ElectionViewModel, electionId: String) {
+    val election = electionViewModel.getElectionById(electionId)
+    var title by remember { mutableStateOf(election?.title ?: "") }
+    var desc by remember { mutableStateOf(election?.description ?: "") }
+    var date by remember { mutableStateOf(election?.date ?: "") }
+    var location by remember { mutableStateOf(election?.location ?: "") }
+    var voters by remember { mutableStateOf(election?.totalVoters.toString() ?: "") }
+    var status by remember { mutableStateOf(election?.status ?: ElectionStatus.UPCOMING) }
+    var showSuccess by remember { mutableStateOf(false) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    Scaffold(topBar = { TopAppBar(title = { Text("Edit Election") }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White, navigationIconContentColor = Color.White)) }) { padding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            item {
+                Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Edit Election Details", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        OutlinedTextField(value = title, onValueChange = { title = it; errorMsg = null }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = desc, onValueChange = { desc = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+                        OutlinedTextField(value = date, onValueChange = { date = it }, label = { Text("Date") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = location, onValueChange = { location = it }, label = { Text("Location") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = voters, onValueChange = { voters = it; errorMsg = null }, label = { Text("Total Voters") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        Text("Status", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(selected = status == ElectionStatus.UPCOMING, onClick = { status = ElectionStatus.UPCOMING }, label = { Text("Upcoming") })
+                            FilterChip(selected = status == ElectionStatus.ACTIVE, onClick = { status = ElectionStatus.ACTIVE }, label = { Text("Active") })
+                            FilterChip(selected = status == ElectionStatus.COMPLETED, onClick = { status = ElectionStatus.COMPLETED }, label = { Text("Completed") })
+                        }
+                    }
+                }
+            }
+            if (errorMsg != null) item { Text(errorMsg!!, color = MaterialTheme.colorScheme.error) }
+            item {
+                Button(onClick = {
+                    when {
+                        title.isBlank() -> errorMsg = "Enter title"
+                        desc.isBlank() -> errorMsg = "Enter description"
+                        date.isBlank() -> errorMsg = "Enter date"
+                        location.isBlank() -> errorMsg = "Enter location"
+                        voters.isBlank() -> errorMsg = "Enter voters"
+                        voters.toIntOrNull() == null -> errorMsg = "Invalid number"
+                        voters.toInt() <= 0 -> errorMsg = "Voters must be > 0"
+                        else -> {
+                            val updatedElection = Election(electionId, title, desc, date, location, status, election?.candidates ?: mutableListOf(), voters.toInt())
+                            if (electionViewModel.updateElection(electionId, updatedElection)) showSuccess = true else errorMsg = "Update failed"
+                        }
+                    }
+                }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Color(0xFF4CAF50))) { Text("Save Changes") }
+            }
+        }
+    }
+    if (showSuccess) AlertDialog(onDismissRequest = { showSuccess = false; navController.popBackStack() }, confirmButton = { TextButton({ showSuccess = false; navController.popBackStack() }) { Text("OK") } }, title = { Text("Success!") }, text = { Text("Election updated successfully!") })
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CreateElectionPage(navController: NavController, electionViewModel: ElectionViewModel) {
+    var title by remember { mutableStateOf("") }
+    var desc by remember { mutableStateOf("") }
+    var date by remember { mutableStateOf("") }
+    var location by remember { mutableStateOf("") }
+    var voters by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf(ElectionStatus.UPCOMING) }
+    var showSuccess by remember { mutableStateOf(false) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    Scaffold(topBar = { TopAppBar(title = { Text("Create Election") }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White, navigationIconContentColor = Color.White)) }) { padding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            item {
+                Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Election Details", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        OutlinedTextField(value = title, onValueChange = { title = it; errorMsg = null }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = desc, onValueChange = { desc = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+                        OutlinedTextField(value = date, onValueChange = { date = it }, label = { Text("Date") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = location, onValueChange = { location = it }, label = { Text("Location") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = voters, onValueChange = { voters = it; errorMsg = null }, label = { Text("Total Voters") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        Text("Status", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(selected = status == ElectionStatus.UPCOMING, onClick = { status = ElectionStatus.UPCOMING }, label = { Text("Upcoming") })
+                            FilterChip(selected = status == ElectionStatus.ACTIVE, onClick = { status = ElectionStatus.ACTIVE }, label = { Text("Active") })
+                            FilterChip(selected = status == ElectionStatus.COMPLETED, onClick = { status = ElectionStatus.COMPLETED }, label = { Text("Completed") })
+                        }
+                    }
+                }
+            }
+            if (errorMsg != null) item { Text(errorMsg!!, color = MaterialTheme.colorScheme.error) }
+            item {
+                Button(onClick = {
+                    when {
+                        title.isBlank() -> errorMsg = "Enter title"
+                        desc.isBlank() -> errorMsg = "Enter description"
+                        date.isBlank() -> errorMsg = "Enter date"
+                        location.isBlank() -> errorMsg = "Enter location"
+                        voters.isBlank() -> errorMsg = "Enter voters"
+                        voters.toIntOrNull() == null -> errorMsg = "Invalid number"
+                        voters.toInt() <= 0 -> errorMsg = "Voters must be > 0"
+                        else -> {
+                            val newElection = Election(System.currentTimeMillis().toString(), title, desc, date, location, status, mutableListOf(), voters.toInt())
+                            if (electionViewModel.addElection(newElection)) showSuccess = true else errorMsg = "Duplicate title"
+                        }
+                    }
+                }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Color(0xFF4CAF50))) { Text("Create Election") }
+            }
+        }
+    }
+    if (showSuccess) AlertDialog(onDismissRequest = { showSuccess = false; navController.popBackStack() }, confirmButton = { TextButton({ showSuccess = false; navController.popBackStack() }) { Text("OK") } }, title = { Text("Success!") }, text = { Text("Election created successfully!") })
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditCandidatePage(navController: NavController, electionViewModel: ElectionViewModel, electionId: String, candidateId: String) {
+    val election = electionViewModel.getElectionById(electionId)
+    val candidate = election?.candidates?.find { it.id == candidateId }
+    var name by remember { mutableStateOf(candidate?.name ?: "") }
+    var party by remember { mutableStateOf(candidate?.party ?: "") }
+    var symbol by remember { mutableStateOf(candidate?.symbol ?: "") }
+    var desc by remember { mutableStateOf(candidate?.description ?: "") }
+    var showSuccess by remember { mutableStateOf(false) }
+    var showDelete by remember { mutableStateOf(false) }
+
+    Scaffold(topBar = { TopAppBar(title = { Text("Edit Candidate") }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White, navigationIconContentColor = Color.White)) }) { padding ->
+        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Edit Candidate", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Election: ${election?.title}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = party, onValueChange = { party = it }, label = { Text("Party") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = symbol, onValueChange = { symbol = it }, label = { Text("Symbol") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = desc, onValueChange = { desc = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = {
+                    if (candidate != null) {
+                        val updated = candidate.copy(name = name, party = party, symbol = symbol.ifEmpty { candidate.symbol }, description = desc.ifEmpty { candidate.description })
+                        if (electionViewModel.updateCandidate(electionId, candidateId, updated)) showSuccess = true
+                    }
+                }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(Color(0xFF4CAF50))) { Text("Save Changes") }
+                OutlinedButton(onClick = { showDelete = true }, modifier = Modifier.weight(1f), colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") }
+            }
+        }
+    }
+    if (showSuccess) AlertDialog(onDismissRequest = { showSuccess = false; navController.popBackStack() }, confirmButton = { TextButton({ showSuccess = false; navController.popBackStack() }) { Text("OK") } }, title = { Text("Success!") }, text = { Text("Candidate updated successfully!") })
+    if (showDelete) AlertDialog(onDismissRequest = { showDelete = false }, confirmButton = { TextButton(onClick = { electionViewModel.removeCandidate(electionId, candidateId); showDelete = false; navController.popBackStack() }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") } }, dismissButton = { TextButton({ showDelete = false }) { Text("Cancel") } }, title = { Text("Delete Candidate") }, text = { Text("Delete ${candidate?.name ?: "this candidate"}?") })
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AuditLogPage(navController: NavController, voteViewModel: VoteViewModel) {
+    val entries = voteViewModel.auditLog
+    Scaffold(topBar = { TopAppBar(title = { Text("Audit Log") }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }) }) { padding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+            if (entries.isEmpty()) {
+                item { Text("No audit entries") }
+            } else {
+                items(entries.reversed()) { entry ->
+                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(entry.action, fontWeight = FontWeight.Bold)
+                            Text(entry.details, fontSize = 12.sp)
+                            Text("${entry.userName} - ${android.text.format.DateFormat.format("MMM dd, hh:mm a", entry.timestamp)}", fontSize = 10.sp, color = Color.Gray)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ==================== ELECTION DETAIL SCREEN ====================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ElectionDetailScreen(electionId: String, navController: NavController, electionViewModel: ElectionViewModel, voteViewModel: VoteViewModel, authViewModel: AuthViewModel) {
+    var selectedCandidate by remember { mutableStateOf<Candidate?>(null) }
+    var showConfirm by remember { mutableStateOf(false) }
+    var showSuccess by remember { mutableStateOf(false) }
+    val election = electionViewModel.getElectionById(electionId)
+    val hasVoted = authViewModel.hasVoted(electionId)
+    val isPublished = voteViewModel.getPublishedResults(electionId) != null
+
+    Scaffold(topBar = { TopAppBar(title = { Text(election?.title ?: "Election Details") }, navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }) }) { padding ->
+        if (isPublished) {
+            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.AutoMirrored.Filled.ShowChart, contentDescription = null, modifier = Modifier.size(80.dp), tint = Color(0xFF4CAF50))
+                    Text("Results Published!", style = MaterialTheme.typography.headlineSmall)
+                    Text("View results in the Results section.", style = MaterialTheme.typography.bodyMedium)
+                    Button(onClick = { navController.navigate("results") }) { Text("View Results") }
+                }
+            }
+        } else if (hasVoted) {
+            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(80.dp), tint = Color(0xFF4CAF50))
+                    Text("You have already voted!", style = MaterialTheme.typography.headlineSmall)
+                    Button(onClick = { navController.popBackStack() }) { Text("Go Back") }
+                }
+            }
+        } else if (election != null && election.status == ElectionStatus.ACTIVE) {
+            Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(MaterialTheme.colorScheme.primaryContainer)) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(election.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        Text(election.description, style = MaterialTheme.typography.bodyMedium)
+                        Text("Date: ${election.date}", style = MaterialTheme.typography.bodySmall)
+                        Text("Location: ${election.location}", style = MaterialTheme.typography.bodySmall)
+                        Text("Total Voters: ${election.totalVoters}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Text("Select Your Candidate", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                election.candidates.forEach { candidate ->
+                    Card(modifier = Modifier.fillMaxWidth().clickable { selectedCandidate = candidate }) {
+                        Row(modifier = Modifier.padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(candidate.symbol, fontSize = 32.sp)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(candidate.name, fontWeight = FontWeight.Bold)
+                                    Text(candidate.party, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                                    Text(candidate.description, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                                }
+                            }
+                            RadioButton(selected = selectedCandidate?.id == candidate.id, onClick = { selectedCandidate = candidate })
+                        }
+                    }
+                }
+                Button(onClick = { if (selectedCandidate != null) showConfirm = true }, modifier = Modifier.fillMaxWidth(), enabled = selectedCandidate != null, colors = ButtonDefaults.buttonColors(Color(0xFF4CAF50))) {
+                    Icon(Icons.Default.HowToVote, contentDescription = null)
+                    Text("Submit Vote", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+    if (showConfirm && selectedCandidate != null && election != null) {
+        AlertDialog(onDismissRequest = { showConfirm = false }, confirmButton = { TextButton(onClick = { if (voteViewModel.castVote(authViewModel.currentUser?.id ?: 0, authViewModel.currentUser?.name ?: "", election.id, election.title, selectedCandidate!!.id, selectedCandidate!!.name, selectedCandidate!!.party)) { authViewModel.markVoted(election.id); showConfirm = false; showSuccess = true } }) { Text("Confirm") } }, dismissButton = { TextButton({ showConfirm = false }) { Text("Cancel") } }, title = { Text("Confirm Vote") }, text = { Text("Vote for ${selectedCandidate!!.name} (${selectedCandidate!!.party})?") })
+    }
+    if (showSuccess) { AlertDialog(onDismissRequest = { showSuccess = false; navController.popBackStack() }, confirmButton = { TextButton({ showSuccess = false; navController.popBackStack() }) { Text("Done") } }, title = { Text("Thank You!") }, text = { Text("Your vote has been recorded.") }) }
+}

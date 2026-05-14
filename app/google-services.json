@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "670704138727",
+    "project_id": "smart-online-voting-solution",
+    "storage_bucket": "smart-online-voting-solution.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:670704138727:android:8850797ad1961661e36542",
+        "android_client_info": {
+          "package_name": "com.example.demoapplication"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAbXLwYAtsLG07PQl17GwV5BcABEkk57yE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
